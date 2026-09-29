@@ -3,12 +3,15 @@ import { loadToken, exchangeCode, saveToken, getAuthUrl } from './auth.js'
 import { parseLogInput } from './wcl/url.js'
 import { DEFAULT_DEATH_CUTOFF } from './config.js'
 import { getReport, resolveMonk, bossPulls } from './mw/night.js'
+import { parseCodes } from './mw/multi.js'
 import {
   renderAuthPage,
   renderHomePage,
   renderNightPage,
   renderPullPage,
   renderBossPage,
+  renderMultiPage,
+  renderMultiBossPage,
   renderErrorPage,
 } from './dashboard/render.js'
 
@@ -47,10 +50,26 @@ app.get('/', c => {
   return c.html(renderHomePage())
 })
 
-// Form target: turn a pasted WCL URL into the night or pull page.
+// Form target: turn pasted WCL URLs into a page. One report opens its night (or pull);
+// several, or an "add reports" submit, open the by-boss comparison.
 app.get('/go', async c => {
-  const parsed = parseLogInput(c.req.query('log') ?? '')
-  if (!parsed) return c.html(renderErrorPage("That doesn't look like a WarcraftLogs report URL or code."), 400)
+  const lines = (c.req.query('log') ?? '').split(/[\s,]+/).filter(Boolean)
+  const parsedAll = lines.map(parseLogInput)
+  if (parsedAll.some(p => !p) || parsedAll.length === 0) {
+    return c.html(renderErrorPage("That doesn't look like a WarcraftLogs report URL or code."), 400)
+  }
+  const existing = parseCodes(c.req.query('logs'))
+  const codes = [...new Set([...existing, ...parsedAll.map(p => p!.code)])]
+  if (codes.length > 1) {
+    const name = c.req.query('name')
+    const cutoff = c.req.query('cutoff')
+    const qs = new URLSearchParams({ logs: codes.join(',') })
+    if (name) qs.set('name', name)
+    if (cutoff) qs.set('cutoff', cutoff)
+    return c.redirect(`/multi?${qs.toString().replace(/%2C/g, ',')}`)
+  }
+
+  const parsed = parsedAll[0]!
 
   const player = parsed.source ? `?player=${parsed.source}` : ''
   if (parsed.fight === null) return c.redirect(`/report/${parsed.code}${player}`)
@@ -109,5 +128,29 @@ app.get('/report/:code/boss/:encounterId/:difficulty', async c => {
     return c.html(await renderBossPage(code, parseInt(encounterId, 10), parseInt(difficulty, 10), playerParam(c.req.query('player')), cutoffParam(c.req.query('cutoff'))))
   } catch (err) {
     return c.html(renderErrorPage(String(err), `/report/${code}`), 500)
+  }
+})
+
+// Several reports, analysed boss by boss. The Monk is matched by name across reports.
+app.get('/multi', async c => {
+  if (!loadToken()) return c.redirect('/')
+  const codes = parseCodes(c.req.query('logs'))
+  try {
+    return c.html(await renderMultiPage(codes, c.req.query('name') ?? null, cutoffParam(c.req.query('cutoff'))))
+  } catch (err) {
+    return c.html(renderErrorPage(String(err), '/'), 500)
+  }
+})
+
+app.get('/multi/boss/:encounterId/:difficulty', async c => {
+  if (!loadToken()) return c.redirect('/')
+  const { encounterId, difficulty } = c.req.param()
+  if (!/^\d+$/.test(encounterId) || !/^\d+$/.test(difficulty)) return c.html(renderErrorPage('Invalid boss.', '/'), 400)
+  const codes = parseCodes(c.req.query('logs'))
+  try {
+    return c.html(await renderMultiBossPage(codes, c.req.query('name') ?? null, cutoffParam(c.req.query('cutoff')),
+      parseInt(encounterId, 10), parseInt(difficulty, 10)))
+  } catch (err) {
+    return c.html(renderErrorPage(String(err), '/'), 500)
   }
 })

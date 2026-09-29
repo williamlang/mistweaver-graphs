@@ -9,6 +9,9 @@ import { buildTimeline, type Second } from './timeline.js'
 
 // Everything the dashboard knows about one pull. Times are ms from pull start.
 export interface PullAnalysis {
+  reportCode: string
+  reportStartTime: number // epoch ms, identifies the night
+  monkId: number          // report-local actor id
   fightId: number
   name: string
   encounterID: number
@@ -94,6 +97,8 @@ export interface CooldownResult {
 }
 
 export interface PullInput {
+  reportCode: string
+  reportStartTime: number
   fight: Fight              // endTime already moved to the cutoff death, if any
   fullEndTime: number
   cutoff: number | null
@@ -240,6 +245,9 @@ export function analyzePull(input: PullInput): PullAnalysis {
   })
 
   return {
+    reportCode: input.reportCode,
+    reportStartTime: input.reportStartTime,
+    monkId,
     fightId: fight.id,
     name: fight.name,
     encounterID: fight.encounterID,

@@ -250,6 +250,16 @@ export function htmlLayout(title: string, body: string): string {
     .dip-time { font-variant-numeric: tabular-nums; color: #cdd6f4; margin-right: 0.375rem; }
     .dip-ctx { display: block; color: #a6adc8; font-size: 0.75rem; }
     .cutoff-select { min-width: 140px; }
+    textarea {
+      background: #313244; border: 1px solid #45475a; color: #cdd6f4; padding: 0.5rem 0.75rem;
+      border-radius: 6px; font-size: 0.875rem; font-family: inherit; width: 100%; resize: vertical; outline: none;
+    }
+    textarea:focus { border-color: #89dceb; }
+    .boss-section { margin-bottom: 2.5rem; }
+    .boss-section > .card { margin-bottom: 1rem; overflow-x: auto; }
+    .boss-head { display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.75rem; }
+    .boss-head h2 { font-size: 1.125rem; color: #cdd6f4; }
+    .boss-head a { margin-left: auto; font-size: 0.8125rem; }
     .cut { color: #a6adc8; cursor: help; }
     .boss-link { color: inherit; }
     .boss-link:hover { color: #89dceb; }

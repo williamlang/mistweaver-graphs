@@ -57,7 +57,13 @@ function byFight(events: WclEvent[]): Map<number, WclEvent[]> {
   return out
 }
 
-export async function loadPulls(code: string, fights: Fight[], monkId: number, cutoff: number | null = null): Promise<PullAnalysis[]> {
+export async function loadPulls(
+  code: string,
+  report: Report,
+  fights: Fight[],
+  monkId: number,
+  cutoff: number | null = null,
+): Promise<PullAnalysis[]> {
   const key = (f: Fight) => `${code}:${monkId}:${f.id}:${cutoff ?? 0}`
   const missing = fights.filter(f => !pullCache.has(key(f)))
 
@@ -89,6 +95,8 @@ export async function loadPulls(code: string, fights: Fight[], monkId: number, c
       const table = tables.get(fight.id)
       if (!table) continue
       pullCache.set(key(fight), analyzePull({
+        reportCode: code,
+        reportStartTime: report.startTime,
         fight: cutAtDeath(fight, deaths, cutoff),
         fullEndTime: fight.endTime,
         cutoff,

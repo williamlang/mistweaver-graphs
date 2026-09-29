@@ -15,6 +15,7 @@ import { manaTimeline } from '../visualizations/mana-timeline.js'
 import { pullTrend, pullLabel, type TrendMetric } from '../visualizations/night-trend.js'
 import type { Visualization } from '../visualizations/types.js'
 import { contextStrip, metricTimeline, alignedTimeline } from '../visualizations/dip-timeline.js'
+import { loadMulti, nightLabel, pullKey, type MultiLoad } from '../mw/multi.js'
 import {
   findDips, contextBreakdown, phaseBreakdown, alignedAverage, rates, METRICS,
   type Dip, type MetricKey, type Rates, type ContextRow,
@@ -120,8 +121,13 @@ function query(monkId: number, cutoff: number | null): string {
   return `?player=${monkId}${c}`
 }
 
-function pullHref(code: string, monkId: number, cutoff: number | null) {
-  return (p: PullAnalysis) => `/report/${code}/fight/${p.fightId}${query(monkId, cutoff)}`
+function pullHref(cutoff: number | null) {
+  return (p: PullAnalysis) => `/report/${p.reportCode}/fight/${p.fightId}${query(p.monkId, cutoff)}`
+}
+
+function multiQuery(codes: string[], name: string | null, cutoff: number | null): string {
+  const c = cutoff === DEFAULT_DEATH_CUTOFF ? '' : `&cutoff=${cutoff ?? 0}`
+  return `?logs=${codes.map(encodeURIComponent).join(',')}${name ? `&name=${encodeURIComponent(name)}` : ''}${c}`
 }
 
 const CUTOFF_CHOICES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20]
@@ -213,10 +219,15 @@ function dipLine(d: Dip, names: PhaseName[]): string {
     ${bits.length ? `<span class="dip-ctx">${bits.join(' · ')}</span>` : ''}`
 }
 
-function dipList(items: Array<{ d: Dip; p: PullAnalysis }>, names: (p: PullAnalysis) => PhaseName[], href?: (p: PullAnalysis) => string): string {
+function dipList(
+  items: Array<{ d: Dip; p: PullAnalysis }>,
+  names: (p: PullAnalysis) => PhaseName[],
+  href?: (p: PullAnalysis) => string,
+  label: (p: PullAnalysis) => string = p => `${p.name} · ${pullLabel(p)}`,
+): string {
   if (items.length === 0) return '<p class="hint">No stretch fell clearly below the pull\'s own level.</p>'
   return `<ul class="dips">${items.map(({ d, p }) => `<li>
-      ${href ? `<a href="${href(p)}">${esc(p.name)} · ${esc(pullLabel(p))}</a> ` : ''}${dipLine(d, names(p))}</li>`).join('')}</ul>`
+      ${href ? `<a href="${href(p)}">${esc(label(p))}</a> ` : ''}${dipLine(d, names(p))}</li>`).join('')}</ul>`
 }
 
 // ── Pages ──────────────────────────────────────────────────────────────────
@@ -240,15 +251,15 @@ export function renderHomePage(): string {
     <div class="container">
       <form class="form-row" action="/go" method="get">
         <div class="field grow">
-          <label for="log">WarcraftLogs URL</label>
-          <input id="log" name="log" type="text" autocomplete="off" required
-            placeholder="https://www.warcraftlogs.com/reports/ABCdef123456">
+          <label for="log">WarcraftLogs URLs</label>
+          <textarea id="log" name="log" rows="3" autocomplete="off" required
+            placeholder="https://www.warcraftlogs.com/reports/ABCdef123456&#10;One per line for several nights"></textarea>
         </div>
         <button type="submit">Analyze</button>
       </form>
       <p class="hint">
-        Paste a report URL for the whole night. A URL with <code>?fight=12</code> (or <code>fight=last</code>)
-        opens that pull directly, and <code>source=</code> picks the Monk.
+        One URL opens that night. Several (one per line) compare the nights boss by boss.
+        A single URL with <code>?fight=12</code> (or <code>fight=last</code>) opens that pull directly, and <code>source=</code> picks the Monk.
       </p>
     </div>`
   return htmlLayout('Mistweaver Graphs', body)
@@ -370,9 +381,9 @@ export async function renderNightPage(code: string, playerID: number | null, cut
     return htmlLayout(`${report.title} — Mistweaver Graphs`, body)
   }
 
-  const pulls = await loadPulls(code, fights, monk.id, cutoff)
+  const pulls = await loadPulls(code, report, fights, monk.id, cutoff)
   const s = summarize(pulls)
-  const href = pullHref(code, monk.id, cutoff)
+  const href = pullHref(cutoff)
   const judged = pulls.filter(p => p.durationMs >= MIN_JUDGED_PULL_MS)
 
   const trends: Array<[TrendMetric, number]> = [
@@ -407,6 +418,8 @@ export async function renderNightPage(code: string, playerID: number | null, cut
       </div>
       <div class="section-label" style="margin-top:1.5rem">Across the night <span class="muted">— dashed line is the night average; click a bar to open the pull</span></div>
       <div class="dashboard-grid trends">${trendCards}</div>
+      <div class="section-label" style="margin-top:1.5rem">Compare with other nights</div>
+      ${addReportForm([code], monk.name, cutoff)}
     </div>`
 
   return htmlLayout(`${report.title} — Mistweaver Graphs`, body)
@@ -440,7 +453,7 @@ export async function renderPullPage(code: string, fightId: number, playerID: nu
   // Loading the whole night is one batched request and fills the cache for the
   // neighbouring pulls, which the comparisons need anyway.
   const [pulls, heals] = await Promise.all([
-    loadPulls(code, fights, monk.id, cutoff),
+    loadPulls(code, report, fights, monk.id, cutoff),
     fetchEvents(code, 'Healing', [fight.id], fight.startTime, fight.endTime, { sourceID: monk.id }),
   ])
   const cutHeals = (p: PullAnalysis) => heals.filter(e => e.timestamp <= p.startMs + p.durationMs)
@@ -448,7 +461,7 @@ export async function renderPullPage(code: string, fightId: number, playerID: nu
   const p = pulls[idx]
   if (!p) return renderErrorPage('Could not load this pull.', `/report/${code}${query(monk.id, cutoff)}`)
 
-  const href = pullHref(code, monk.id, cutoff)
+  const href = pullHref(cutoff)
   const siblings = pulls.filter(o =>
     o.fightId !== p.fightId && o.encounterID === p.encounterID && o.difficulty === p.difficulty && o.durationMs >= MIN_JUDGED_PULL_MS)
   const bossPullNo = pulls.filter(o => o.encounterID === p.encounterID && o.difficulty === p.difficulty && o.startMs <= p.startMs).length
@@ -557,24 +570,56 @@ export async function renderBossPage(code: string, encounterID: number, difficul
   if (!monk) return renderErrorPage('No Monk found in this report.', `/report/${code}`)
 
   const fights = bossPulls(report, monk.id)
-  const all = await loadPulls(code, fights, monk.id, cutoff)
+  const all = await loadPulls(code, report, fights, monk.id, cutoff)
   const pulls = all.filter(p => p.encounterID === encounterID && (p.difficulty ?? 0) === difficulty)
   if (pulls.length === 0) return renderErrorPage('No pulls on that boss in this report.', `/report/${code}${query(monk.id, cutoff)}`)
 
-  const href = pullHref(code, monk.id, cutoff)
-  const names = phaseNamesFor(report, encounterID)
+  const order = new Map(all.map((p, i) => [pullKey(p), i + 1]))
+  const analysis = bossAnalysis(pulls, all, phaseNamesFor(report, encounterID), cutoff,
+    p => `#${order.get(pullKey(p))} ${pullLabel(p)}`, 'your whole night')
+
+  const title = `${pulls[0].name} (${difficultyName(pulls[0].difficulty)})`
+  const dropdown = playerDropdown(monks, monk.id, id => `/report/${code}/boss/${encounterID}/${difficulty}${query(id, cutoff)}`)
+  const nightHref = `/report/${code}${query(monk.id, cutoff)}`
+  const body = `
+    ${header(`<a href="/">Home</a> <span>›</span> <a href="${nightHref}">${esc(report.title)}</a> <span>›</span> <span>${esc(title)}</span>`)}
+    <div class="container">
+      <div class="form-row"><div class="field"><label>Mistweaver</label>${dropdown}</div>
+        ${cutoffSelect(cutoff, c => `/report/${code}/boss/${encounterID}/${difficulty}${query(monk.id, c)}`)}</div>
+      ${bossTiles(summarize(pulls))}
+      ${analysis}
+    </div>`
+  return htmlLayout(`${title} — Mistweaver Graphs`, body)
+}
+
+function bossTiles(s: Summary): string {
+  return `<div class="stats">
+    ${tile('Renewing Mist uptime', graded(pct(s.remUptime, 1), gradeEfficiency(s.remUptime)), `${s.remCpm.toFixed(1)} casts/min`, true)}
+    ${tile('Rushing Wind Kick uptime', graded(pct(s.kickUptime, 1), gradeEfficiency(s.kickUptime)), `${Math.round(s.kickIdleMs / 1000)}s ready and unused`, true)}
+    ${tile('CPM', s.cpm.toFixed(1), `${s.judged} pull${s.judged === 1 ? '' : 's'} judged`, true)}
+  </div>`
+}
+
+// Phase table, biggest dips and by-time averages for one boss. `all` is the wider set
+// (the night, or every report) that the phase deltas are measured against.
+function bossAnalysis(
+  pulls: PullAnalysis[],
+  all: PullAnalysis[],
+  names: PhaseName[],
+  cutoff: number | null,
+  label: (p: PullAnalysis) => string,
+  against: string,
+): string {
+  const href = pullHref(cutoff)
   const judged = pulls.filter(p => p.durationMs >= MIN_JUDGED_PULL_MS)
-  const s = summarize(pulls)
-  const night = rates(all.filter(p => p.durationMs >= MIN_JUDGED_PULL_MS).flatMap(p => p.timeline))
-  const order = new Map(all.map((p, i) => [p.fightId, i + 1]))
-  const label = (p: PullAnalysis) => `#${order.get(p.fightId)} ${pullLabel(p)}`
+  const base = rates(all.filter(p => p.durationMs >= MIN_JUDGED_PULL_MS).flatMap(p => p.timeline))
 
   const phases = phaseBreakdown(pulls, names)
   const phaseTable = phases.length
     ? `<table class="mini context">
         <thead><tr><th>Phase</th><th class="num">Pulls</th><th class="num">Time</th><th class="num">ReM up</th><th class="num">RWK up</th><th class="num">CPM</th><th class="num">Moving</th></tr></thead>
-        <tbody>${phases.map(r => `<tr><td>${esc(r.name)}</td><td class="num">${r.pulls}</td><td class="num">${formatDuration(r.rates.seconds * 1000)}</td>${ratesCells(r.rates, night)}</tr>`).join('')}</tbody>
-      </table><p class="hint">Deltas are against your whole night. Phase times come from WarcraftLogs.</p>`
+        <tbody>${phases.map(r => `<tr><td>${esc(r.name)}</td><td class="num">${r.pulls}</td><td class="num">${formatDuration(r.rates.seconds * 1000)}</td>${ratesCells(r.rates, base)}</tr>`).join('')}</tbody>
+      </table><p class="hint">Deltas are against ${esc(against)}. Phase times come from WarcraftLogs.</p>`
     : '<p class="hint">WarcraftLogs has no phase data for this boss, so the by-time view below is the one to read.</p>'
 
   const avg = alignedAverage(judged)
@@ -588,26 +633,162 @@ export async function renderBossPage(code: string, encounterID: number, difficul
     judged.flatMap(p => findDips(p).map(d => ({ d, p }))).sort((a, b) => b.d.drop - a.d.drop).slice(0, 10),
     () => names,
     href,
+    label,
   )
 
-  const title = `${pulls[0].name} (${difficultyName(pulls[0].difficulty)})`
-  const dropdown = playerDropdown(monks, monk.id, id => `/report/${code}/boss/${encounterID}/${difficulty}${query(id, cutoff)}`)
-  const nightHref = `/report/${code}${query(monk.id, cutoff)}`
-  const body = `
-    ${header(`<a href="/">Home</a> <span>›</span> <a href="${nightHref}">${esc(report.title)}</a> <span>›</span> <span>${esc(title)}</span>`)}
-    <div class="container">
-      <div class="form-row"><div class="field"><label>Mistweaver</label>${dropdown}</div>
-        ${cutoffSelect(cutoff, c => `/report/${code}/boss/${encounterID}/${difficulty}${query(monk.id, c)}`)}</div>
-      <div class="stats">
-        ${tile('Renewing Mist uptime', graded(pct(s.remUptime, 1), gradeEfficiency(s.remUptime)), `${s.remCpm.toFixed(1)} casts/min`, true)}
-        ${tile('Rushing Wind Kick uptime', graded(pct(s.kickUptime, 1), gradeEfficiency(s.kickUptime)), `${Math.round(s.kickIdleMs / 1000)}s ready and unused`, true)}
-        ${tile('CPM', s.cpm.toFixed(1), `${s.judged} pull${s.judged === 1 ? '' : 's'} judged`, true)}
-      </div>
-      <div class="dashboard-grid">
-        <div class="card wide"><div class="card-title">By phase</div>${phaseTable}</div>
-        <div class="card wide"><div class="card-title">Biggest dips on this boss</div>${dips}</div>
-        ${aligned}
-      </div>
+  return `<div class="dashboard-grid">
+    <div class="card wide"><div class="card-title">By phase</div>${phaseTable}</div>
+    <div class="card wide"><div class="card-title">Biggest dips on this boss</div>${dips}</div>
+    ${aligned}
+  </div>`
+}
+
+// ── Several reports ────────────────────────────────────────────────────────
+
+function addReportForm(codes: string[], name: string | null, cutoff: number | null): string {
+  return `<form class="form-row" action="/go" method="get">
+    <input type="hidden" name="logs" value="${esc(codes.join(','))}">
+    ${name ? `<input type="hidden" name="name" value="${esc(name)}">` : ''}
+    ${cutoff !== DEFAULT_DEATH_CUTOFF ? `<input type="hidden" name="cutoff" value="${cutoff ?? 0}">` : ''}
+    <div class="field grow"><label for="more">Add reports</label>
+      <textarea id="more" name="log" rows="2" required placeholder="Paste one or more WarcraftLogs URLs, one per line"></textarea></div>
+    <button type="submit">Compare</button>
+  </form>`
+}
+
+function nameDropdown(names: string[], selected: string | null, urlFor: (n: string) => string): string {
+  if (names.length <= 1) return `<span class="monk-name">${esc(names[0] ?? '')}</span>`
+  const urls = Object.fromEntries(names.map(n => [n, urlFor(n)]))
+  return `<select class="player-select" data-urls='${escapeAttr(JSON.stringify(urls))}'
+    onchange="window.location=JSON.parse(this.dataset.urls)[this.value]">
+    ${names.map(n => `<option value="${esc(n)}" ${n === selected ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>`
+}
+
+function multiControls(m: MultiLoad, codes: string[], cutoff: number | null, path: string): string {
+  const reportRows = m.sources.map(src => {
+    const mine = m.pulls.filter(p => p.reportCode === src.code)
+    const others = codes.filter(c => c !== src.code)
+    const remove = others.length ? `<a class="muted" href="${others.length === 1 ? `/report/${others[0]}` : `/multi${multiQuery(others, m.monkName, cutoff)}`}">remove</a>` : ''
+    const night = src.monk ? `<a href="/report/${src.code}${query(src.monk.id, cutoff)}">${esc(src.report.title)}</a>` : esc(src.report.title)
+    return `<tr><td class="num">${nightLabel(src.report.startTime)}</td><td>${night}</td>
+      <td class="num">${src.monk ? `${mine.length} boss pull${mine.length === 1 ? '' : 's'}` : `<span class="g-bad">${esc(m.monkName ?? 'Monk')} not in this report</span>`}</td><td>${remove}</td></tr>`
+  }).join('')
+  return `
+    <div class="form-row">
+      <div class="field"><label>Mistweaver</label>${nameDropdown(m.monkNames, m.monkName, n => `${path}${multiQuery(codes, n, cutoff)}`)}</div>
+      ${cutoffSelect(cutoff, c => `${path}${multiQuery(codes, m.monkName, c)}`)}
+    </div>
+    <div class="card" style="margin-bottom:1.5rem">
+      <div class="card-title">Reports</div>
+      <table class="mini"><tbody>${reportRows}</tbody></table>
+      ${addReportForm(codes, m.monkName, cutoff)}
     </div>`
-  return htmlLayout(`${title} — Mistweaver Graphs`, body)
+}
+
+function byNightTable(pulls: PullAnalysis[], cutoff: number | null, bossLinkFor: (p: PullAnalysis) => string): string {
+  const nights = [...new Set(pulls.map(p => p.reportCode))]
+  const row = (label: string, ps: PullAnalysis[], cls = '') => {
+    const s = summarize(ps)
+    const killed = ps.some(p => p.kill)
+    const best = Math.min(...ps.map(p => (p.kill ? 0 : p.bossPct ?? 100)))
+    return `<tr class="${cls}"><td>${label}</td>
+      <td class="num">${ps.length}</td><td class="num">${killed ? `${s.kills} kill${s.kills === 1 ? '' : 's'}` : `best ${best.toFixed(1)}%`}</td>
+      <td class="num">${graded(pct(s.remUptime, 1), gradeEfficiency(s.remUptime))}</td><td class="num">${s.remCpm.toFixed(1)}</td>
+      <td class="num">${graded(pct(s.kickUptime, 1), gradeEfficiency(s.kickUptime))}</td><td class="num">${s.cpm.toFixed(1)}</td>
+      <td class="num">${graded(pct(s.activeTime, 1), gradeActiveTime(s.activeTime))}</td><td class="num">${formatBigNum(s.hps)}</td></tr>`
+  }
+  const rows = nights.map(code => {
+    const ps = pulls.filter(p => p.reportCode === code)
+    return row(`<a href="${bossLinkFor(ps[0])}">${nightLabel(ps[0].reportStartTime)}</a>`, ps)
+  }).join('')
+  return `<table class="mini context">
+    <thead><tr><th>Night</th><th class="num">Pulls</th><th class="num">Result</th><th class="num">ReM up</th><th class="num">ReM/min</th>
+      <th class="num">RWK up</th><th class="num">CPM</th><th class="num">Active</th><th class="num">HPS</th></tr></thead>
+    <tbody>${rows}${nights.length > 1 ? row('All nights', pulls, 'base-row') : ''}</tbody></table>`
+}
+
+function bossTrends(pulls: PullAnalysis[], cutoff: number | null): string {
+  const judged = pulls.filter(p => p.durationMs >= MIN_JUDGED_PULL_MS)
+  // A trend needs something to compare; one pull is already fully described by its row.
+  if (judged.length < 2) return ''
+  const s = summarize(pulls)
+  const metrics: Array<[TrendMetric, number]> = [
+    [{ id: 'rem', title: 'Renewing Mist uptime', value: p => p.rem.uptimePct, format: '.0%', domain: [0, 1] }, s.remUptime],
+    [{ id: 'kick', title: 'Rushing Wind Kick uptime', value: p => p.kick.uptimePct, format: '.0%', domain: [0, 1] }, s.kickUptime],
+    [{ id: 'cpm', title: 'CPM', value: p => p.cpm, format: '.1f' }, s.cpm],
+  ]
+  return `<div class="dashboard-grid trends">${metrics.map(([m, avg]) =>
+    vizCard(pullTrend(judged, { ...m, badge: `avg ${d3ish(avg, m.format)}` }, pullHref(cutoff), avg))).join('')}</div>`
+}
+
+async function multiOrError(codes: string[], name: string | null, cutoff: number | null): Promise<MultiLoad | string> {
+  if (codes.length === 0) return renderErrorPage('No reports given.', '/')
+  const m = await loadMulti(codes, name, cutoff)
+  if (!m.monkName) return renderErrorPage('None of these reports has a Monk in it.', '/')
+  return m
+}
+
+export async function renderMultiPage(codes: string[], name: string | null, cutoff: number | null): Promise<string> {
+  const m = await multiOrError(codes, name, cutoff)
+  if (typeof m === 'string') return m
+
+  // Bosses in the order first pulled, with each boss's difficulties side by side.
+  const firstSeen = new Map<number, number>()
+  m.pulls.forEach((p, i) => { if (!firstSeen.has(p.encounterID)) firstSeen.set(p.encounterID, i) })
+  const groups = groupByBoss(m.pulls).sort((a, b) =>
+    firstSeen.get(a.pulls[0].encounterID)! - firstSeen.get(b.pulls[0].encounterID)! || (a.difficulty ?? 0) - (b.difficulty ?? 0))
+  const nights = new Set(m.pulls.map(p => p.reportCode)).size
+  const sections = groups.map(g => {
+    const killed = g.pulls.some(p => p.kill)
+    const best = Math.min(...g.pulls.map(p => (p.kill ? 0 : p.bossPct ?? 100)))
+    const n = new Set(g.pulls.map(p => p.reportCode)).size
+    const deep = `/multi/boss/${g.pulls[0].encounterID}/${g.difficulty ?? 0}${multiQuery(codes, m.monkName, cutoff)}`
+    const oneNight = (p: PullAnalysis) => bossHref(p.reportCode, p.monkId, cutoff, p.encounterID, p.difficulty)
+    return `<section class="boss-section">
+      <div class="boss-head">
+        <h2>${esc(g.name)} <span class="muted">${difficultyName(g.difficulty)}</span></h2>
+        <span class="muted">${g.pulls.length} pull${g.pulls.length === 1 ? '' : 's'} over ${n} night${n === 1 ? '' : 's'} · ${killed ? 'Killed' : `best ${best.toFixed(1)}%`}</span>
+        <a href="${deep}">Phases, timing and dips →</a>
+      </div>
+      <div class="card">${byNightTable(g.pulls, cutoff, oneNight)}</div>
+      ${bossTrends(g.pulls, cutoff)}
+    </section>`
+  }).join('')
+
+  const body = `
+    ${header(`<a href="/">Home</a> <span>›</span> <span>${nights} night${nights === 1 ? '' : 's'}, by boss</span>`)}
+    <div class="container">
+      ${multiControls(m, codes, cutoff, '/multi')}
+      ${nightTiles(summarize(m.pulls))}
+      ${sections || '<div class="error-box">No boss pulls found for this Monk.</div>'}
+      <p class="hint">Each boss's charts run across every pull in real-time order; hover a bar for its night. Click a night to open that night's view of the boss.</p>
+    </div>`
+  return htmlLayout('By boss — Mistweaver Graphs', body)
+}
+
+export async function renderMultiBossPage(codes: string[], name: string | null, cutoff: number | null, encounterID: number, difficulty: number): Promise<string> {
+  const m = await multiOrError(codes, name, cutoff)
+  if (typeof m === 'string') return m
+  const pulls = m.pulls.filter(p => p.encounterID === encounterID && (p.difficulty ?? 0) === difficulty)
+  if (pulls.length === 0) return renderErrorPage('No pulls on that boss in these reports.', `/multi${multiQuery(codes, m.monkName, cutoff)}`)
+
+  const names = m.sources.map(src => phaseNamesFor(src.report, encounterID)).find(n => n.length) ?? []
+  const label = (p: PullAnalysis) => {
+    const n = pulls.filter(o => o.reportCode === p.reportCode && o.startMs <= p.startMs).length
+    return `${nightLabel(p.reportStartTime)} #${n} ${pullLabel(p)}`
+  }
+  const title = `${pulls[0].name} (${difficultyName(pulls[0].difficulty)})`
+  const path = `/multi/boss/${encounterID}/${difficulty}`
+  const oneNight = (p: PullAnalysis) => bossHref(p.reportCode, p.monkId, cutoff, p.encounterID, p.difficulty)
+
+  const body = `
+    ${header(`<a href="/">Home</a> <span>›</span> <a href="/multi${multiQuery(codes, m.monkName, cutoff)}">By boss</a> <span>›</span> <span>${esc(title)}</span>`)}
+    <div class="container">
+      ${multiControls(m, codes, cutoff, path)}
+      ${bossTiles(summarize(pulls))}
+      <div class="card" style="margin-bottom:1.25rem"><div class="card-title">By night</div>${byNightTable(pulls, cutoff, oneNight)}</div>
+      ${bossTrends(pulls, cutoff)}
+      <div style="margin-top:1.25rem">${bossAnalysis(pulls, m.pulls, names, cutoff, label, 'all your boss pulls in these reports')}</div>
+    </div>`
+  return htmlLayout(`${title} across nights — Mistweaver Graphs`, body)
 }

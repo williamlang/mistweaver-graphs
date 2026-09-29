@@ -1,5 +1,6 @@
 import type { PullAnalysis } from '../mw/analyze.js'
 import { darkTheme, COLORS, VEGA_SCHEMA, type Visualization } from './types.js'
+import { nightLabel } from '../mw/multi.js'
 
 export interface TrendMetric {
   id: string
@@ -25,6 +26,7 @@ export function pullTrend(
   const rows = pulls.map((p, i) => ({
     idx: i + 1,
     boss: p.name,
+    night: nightLabel(p.reportStartTime),
     result: pullLabel(p),
     outcome: p.kill ? 'Kill' : 'Wipe',
     duration: `${Math.floor(p.durationMs / 60000)}:${String(Math.floor(p.durationMs / 1000) % 60).padStart(2, '0')}`,
@@ -43,9 +45,10 @@ export function pullTrend(
       layer: [
         {
           data: { values: rows },
-          mark: { type: 'bar', cornerRadiusEnd: 4, cursor: 'pointer', width: { band: 0.8 } },
+          // Few pulls would otherwise stretch each bar across the chart.
+          mark: { type: 'bar', cornerRadiusEnd: 4, cursor: 'pointer', width: rows.length < 12 ? 28 : { band: 0.8 } },
           encoding: {
-            x: { field: 'idx', type: 'ordinal', title: 'Pull', axis: { labelAngle: 0 } },
+            x: { field: 'idx', type: 'ordinal', title: 'Pull', axis: { labelAngle: 0, labelOverlap: 'parity' } },
             y: {
               field: 'value',
               type: 'quantitative',
@@ -63,6 +66,7 @@ export function pullTrend(
             tooltip: [
               { field: 'value', type: 'quantitative', title: metric.title, format: metric.format },
               { field: 'boss', title: 'Boss' },
+              { field: 'night', title: 'Night' },
               { field: 'result', title: 'Result' },
               { field: 'duration', title: 'Duration' },
               { field: 'idx', title: 'Pull #' },
