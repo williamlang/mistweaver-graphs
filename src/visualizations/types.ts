@@ -8,12 +8,13 @@ export interface VegaSpec {
 export interface Visualization {
   id: string
   title: string
+  badge?: string  // optional stat shown next to the card title
   spec: VegaSpec
 }
 
 // Dark theme config shared across all visualizations
 export const darkTheme = {
-  background: '#1e1e2e',
+  background: 'transparent',
   axis: {
     labelColor: '#cdd6f4',
     titleColor: '#cdd6f4',
@@ -32,3 +33,20 @@ export const darkTheme = {
     stroke: 'transparent',
   },
 }
+
+// Series and status colors, validated for the dark card surface (#181825) with the
+// dataviz palette checker: lightness band, CVD separation and 3:1 contrast all pass.
+export const COLORS = {
+  kill: '#3987e5',
+  wipe: '#d95926',
+  rem: '#16a34a',
+  env: '#3b82f6',
+  good: '#0ca30c',
+  warning: '#fab219',
+  critical: '#d03b3b',
+  muted: '#45475a',
+  ink: '#cdd6f4',
+  inkMuted: '#a6adc8',
+}
+
+export const VEGA_SCHEMA = 'https://vega.github.io/schema/vega-lite/v5.json'

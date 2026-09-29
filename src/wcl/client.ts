@@ -1,13 +1,14 @@
 import { loadToken } from '../auth.js'
 import { WCL_API_URL } from '../config.js'
-import { GET_REPORT, GET_HEALING_TABLE, GET_HEAL_EVENTS } from './queries.js'
+import { GET_REPORT, GET_EVENTS, GET_DEATHS_TABLE, healingTablesQuery } from './queries.js'
 import type {
   Report,
   ReportResponse,
   HealingTableData,
-  HealingTableResponse,
-  HealEvent,
-  HealEventsResponse,
+  DeathEntry,
+  WclEvent,
+  EventDataType,
+  EventsResponse,
   RateLimitData,
 } from './types.js'
 
@@ -58,37 +59,33 @@ export async function fetchReport(code: string): Promise<Report> {
   return data.reportData.report
 }
 
-export async function fetchHealingTable(
-  code: string,
-  fightIDs: number[] | null,
-  sourceID: number,
-): Promise<HealingTableData> {
-  const data = await gql<HealingTableResponse>(GET_HEALING_TABLE, {
-    code,
-    fightIDs: fightIDs ?? undefined,
-    sourceID,
-  })
-  const raw = data.reportData.report.table
-  return (raw as unknown as { data: HealingTableData }).data
+export interface EventOptions {
+  sourceID?: number
+  targetID?: number
+  filterExpression?: string
+  includeResources?: boolean
 }
 
-export async function fetchHealEvents(
+// Pages through one events stream covering every fight in `fightIDs`.
+export async function fetchEvents(
   code: string,
-  fightIDs: number[] | null,
-  sourceID: number,
+  dataType: EventDataType,
+  fightIDs: number[],
   startTime: number,
   endTime: number,
-): Promise<HealEvent[]> {
-  const events: HealEvent[] = []
+  opts: EventOptions = {},
+): Promise<WclEvent[]> {
+  const events: WclEvent[] = []
   let nextPage: number | null = startTime
 
   while (nextPage !== null) {
-    const result: HealEventsResponse = await gql<HealEventsResponse>(GET_HEAL_EVENTS, {
+    const result: EventsResponse = await gql<EventsResponse>(GET_EVENTS, {
       code,
-      fightIDs: fightIDs ?? undefined,
-      sourceID,
+      dataType,
+      fightIDs,
       startTime: nextPage,
       endTime,
+      ...opts,
     })
     const page = result.reportData.report.events
     events.push(...page.data)
@@ -96,4 +93,32 @@ export async function fetchHealEvents(
   }
 
   return events
+}
+
+const TABLES_PER_REQUEST = 15
+
+export async function fetchHealingTables(
+  code: string,
+  fightIDs: number[],
+  sourceID: number,
+  wipeCutoff: number | null = null,
+): Promise<Map<number, HealingTableData>> {
+  const out = new Map<number, HealingTableData>()
+  for (let i = 0; i < fightIDs.length; i += TABLES_PER_REQUEST) {
+    const chunk = fightIDs.slice(i, i + TABLES_PER_REQUEST)
+    const data = await gql<{ reportData: { report: Record<string, { data: HealingTableData }> } }>(
+      healingTablesQuery(chunk),
+      { code, sourceID, wipeCutoff },
+    )
+    for (const id of chunk) out.set(id, data.reportData.report[`f${id}`].data)
+  }
+  return out
+}
+
+export async function fetchDeaths(code: string, fightIDs: number[]): Promise<DeathEntry[]> {
+  const data = await gql<{ reportData: { report: { table: { data: { entries: DeathEntry[] } } } } }>(
+    GET_DEATHS_TABLE,
+    { code, fightIDs },
+  )
+  return data.reportData.report.table.data.entries
 }

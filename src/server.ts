@@ -1,19 +1,27 @@
 import { Hono } from 'hono'
-import type { Context } from 'hono'
 import { loadToken, exchangeCode, saveToken, getAuthUrl } from './auth.js'
-import { fetchReport } from './wcl/client.js'
+import { parseLogInput } from './wcl/url.js'
+import { DEFAULT_DEATH_CUTOFF } from './config.js'
+import { getReport, resolveMonk, bossPulls } from './mw/night.js'
 import {
   renderAuthPage,
   renderHomePage,
-  renderReportPage,
-  renderFightPage,
+  renderNightPage,
+  renderPullPage,
+  renderBossPage,
   renderErrorPage,
 } from './dashboard/render.js'
 
 export const app = new Hono()
 
-function isAuthenticated(c: Context): boolean {
-  return !!loadToken()
+function playerParam(raw: string | undefined): number | null {
+  return raw && /^\d+$/.test(raw) ? parseInt(raw, 10) : null
+}
+
+// ?cutoff=N ignores everything after the Nth death; 0 turns it off; absent = .env default.
+function cutoffParam(raw: string | undefined): number | null {
+  if (raw === undefined || !/^\d+$/.test(raw)) return DEFAULT_DEATH_CUTOFF
+  return parseInt(raw, 10) || null
 }
 
 // OAuth callback
@@ -33,37 +41,72 @@ app.get('/callback', async c => {
   }
 })
 
-// Home — show auth prompt or log code form
+// Home — show auth prompt or log URL form
 app.get('/', c => {
   if (!loadToken()) return c.html(renderAuthPage(getAuthUrl()))
   return c.html(renderHomePage())
 })
 
-// Report overview with fight list
+// Form target: turn a pasted WCL URL into the night or pull page.
+app.get('/go', async c => {
+  const parsed = parseLogInput(c.req.query('log') ?? '')
+  if (!parsed) return c.html(renderErrorPage("That doesn't look like a WarcraftLogs report URL or code."), 400)
+
+  const player = parsed.source ? `?player=${parsed.source}` : ''
+  if (parsed.fight === null) return c.redirect(`/report/${parsed.code}${player}`)
+  if (parsed.fight === 'last') {
+    try {
+      const report = await getReport(parsed.code)
+      const monk = resolveMonk(report, parsed.source)
+      const pulls = monk ? bossPulls(report, monk.id) : []
+      const last = pulls.at(-1)
+      if (!last) return c.redirect(`/report/${parsed.code}${player}`)
+      return c.redirect(`/report/${parsed.code}/fight/${last.id}${player}`)
+    } catch (err) {
+      return c.html(renderErrorPage(String(err), '/'), 500)
+    }
+  }
+  return c.redirect(`/report/${parsed.code}/fight/${parsed.fight}${player}`)
+})
+
+// The night: every boss pull, summarized and trended
 app.get('/report/:code', async c => {
-  if (!isAuthenticated(c)) return c.redirect('/')
+  if (!loadToken()) return c.redirect('/')
 
   const { code } = c.req.param()
   try {
-    const report = await fetchReport(code)
-    return c.html(await renderReportPage(code, report))
+    return c.html(await renderNightPage(code, playerParam(c.req.query('player')), cutoffParam(c.req.query('cutoff'))))
   } catch (err) {
     return c.html(renderErrorPage(String(err), '/'), 500)
   }
 })
 
-// Fight dashboard — fightId = number or "all"
+// One pull in detail
 app.get('/report/:code/fight/:fightId', async c => {
-  if (!isAuthenticated(c)) return c.redirect('/')
+  if (!loadToken()) return c.redirect('/')
 
   const { code, fightId } = c.req.param()
+  const player = playerParam(c.req.query('player'))
+  if (fightId === 'all') return c.redirect(`/report/${code}${player ? `?player=${player}` : ''}`)
+  if (!/^\d+$/.test(fightId)) return c.html(renderErrorPage('Invalid fight ID.', `/report/${code}`), 400)
+
   try {
-    const report = await fetchReport(code)
-    const id = fightId === 'all' ? null : parseInt(fightId, 10)
-    if (fightId !== 'all' && isNaN(id!)) {
-      return c.html(renderErrorPage('Invalid fight ID.', `/report/${code}`), 400)
-    }
-    return c.html(await renderFightPage(code, report, id))
+    return c.html(await renderPullPage(code, parseInt(fightId, 10), player, cutoffParam(c.req.query('cutoff'))))
+  } catch (err) {
+    return c.html(renderErrorPage(String(err), `/report/${code}`), 500)
+  }
+})
+
+// Every pull on one boss: where in the fight the metrics dip, by phase and by time
+app.get('/report/:code/boss/:encounterId/:difficulty', async c => {
+  if (!loadToken()) return c.redirect('/')
+
+  const { code, encounterId, difficulty } = c.req.param()
+  if (!/^\d+$/.test(encounterId) || !/^\d+$/.test(difficulty)) {
+    return c.html(renderErrorPage('Invalid boss.', `/report/${code}`), 400)
+  }
+  try {
+    return c.html(await renderBossPage(code, parseInt(encounterId, 10), parseInt(difficulty, 10), playerParam(c.req.query('player')), cutoffParam(c.req.query('cutoff'))))
   } catch (err) {
     return c.html(renderErrorPage(String(err), `/report/${code}`), 500)
   }

@@ -25,27 +25,43 @@ On first run, visit the printed URL and authorize with WarcraftLogs. The token i
 
 **Backend** (`src/`):
 - `cli.ts` — entry point; validates env, starts Hono server, prints URL
-- `server.ts` — Hono routes: `/` (home/auth), `/callback` (OAuth), `/report/:code`, `/report/:code/fight/:fightId`
+- `server.ts` — Hono routes: `/` (home/auth), `/callback` (OAuth), `/go?log=<WCL URL>` (parses a pasted URL and redirects), `/report/:code` (the night), `/report/:code/fight/:fightId` (one pull), `/report/:code/boss/:encounterId/:difficulty` (every pull on one boss: where the metrics dip). `?player=<actorId>` picks the Monk; `?cutoff=N` ignores everything after the Nth death in each pull, like WarcraftLogs' "ignore after X deaths" (0 = off, default from `WCL_DEATH_CUTOFF`).
 - `auth.ts` — OAuth Authorization Code flow; token stored as JSON in `~/.config/mistweaver-graphs/token.json`
 - `config.ts` — all env vars and constants in one place
-- `wcl/client.ts` — `gql<T>()` helper + typed fetch functions. Injects `rateLimitData` into every query and stores latest value via `getLastRateLimit()`
+- `wcl/client.ts` — `gql<T>()` helper plus `fetchReport`, `fetchEvents` (one paginated stream across many fights), `fetchHealingTables` (one table per fight, batched with GraphQL aliases), `fetchDeaths`. Injects `rateLimitData` into every query and stores latest value via `getLastRateLimit()`
 - `wcl/queries.ts` — GraphQL query strings
-- `wcl/types.ts` — TypeScript types for all WCL API responses
+- `wcl/types.ts` — TypeScript types for WCL API responses
+- `wcl/url.ts` — parses a report code or WCL URL (`?fight=`, `#fight=last`, `source=`)
+
+**Mistweaver analysis** (`src/mw/`), ported from WoWAnalyzer (`~/workspace/WoWAnalyzer/src/analysis/retail/monk/mistweaver`):
+- `spells.ts` — spell IDs, talent entry IDs (read from combatantinfo `talentTree`), GCD and channel spell sets, major cooldown definitions, grade thresholds
+- `cooldown.ts` — `simulateCharges()`, a port of WoWAnalyzer's SpellUsable/CastEfficiency: charges, cooldown-rate changes (modRate), flat reductions, and a cast at 0 charges treated as a missed recharge. Efficiency = share of the pull the spell had fewer than max charges
+- `analyze.ts` — `analyzePull()` turns one pull's events into a `PullAnalysis`: Renewing Mist uptime (WoWAnalyzer's model: fixed 9s, 2 charges / 3 with Pool of Mists, Pool of Mists 1s per kick, Heart of the Jade Serpent rate buffs), Rushing Wind Kick uptime (share of the pull on cooldown), CPM, active time, major cooldown efficiency, active HoT counts, mana, deaths
+- `night.ts` — loads every boss pull of a report in one batch of requests and caches each `PullAnalysis` in memory (a listed fight has ended, so it never changes; the report itself is cached 30s for live logs)
+- `summary.ts` — duration-weighted night/boss summaries and boss grouping
+- `timeline.ts` — `buildTimeline()`: one entry per second of a pull with ReM/kick on-cooldown share, casts, and context (moving from the monk's x/y, boss phase, cooldown window, mana, dead, lost-wipe tail). Position comes from heals/damage landing on the monk (`resourceActor: 2`) plus their casts (`resourceActor: 1`), sampled every ~200ms
+- `dips.ts` — everything derived from the timeline: `rates()` over any set of seconds (dead and lost-wipe seconds excluded), 15s `rolling()` series, `findDips()` per pull, `contextBreakdown()` (standing/moving/opener/cooldowns/low mana/last minute), `phaseBreakdown()` and `alignedAverage()` across pulls of a boss
+
+Deliberate modelling choices: Renewing Mist uptime follows WoWAnalyzer exactly; on the reference log ~7.5% of ReM casts still land at 0 simulated charges (reduction WoWAnalyzer doesn't model either), handled as missed recharges like SpellUsable does. TFT is tracked as a rate. RWK uptime assumes no resets, so it is an upper bound and its idle windows are real waste. The hasted GCD is estimated from gaps after instant 1.5s spells, locally, so lust is followed. Pulls under 20s are shown but excluded from averages.
 
 **Visualizations** (`src/visualizations/`):
-Each file exports a function `(data) => Visualization` where `Visualization` contains an `id`, `title`, and a **Vega-Lite JSON spec**. The spec is serialized into the HTML as `data-spec='...'` (HTML-escaped) and rendered client-side by `vega-embed` loaded from CDN — no frontend build step.
+Each file exports a function returning a `Visualization` (`id`, `title`, optional `badge`, and a **Vega-Lite JSON spec**). The spec is serialized into the HTML as `data-spec='...'` (HTML-escaped) and rendered client-side by `vega-embed` loaded from CDN — no frontend build step. Shared colors live in `COLORS` in `types.ts` (validated for the dark card surface); `time.ts` formats pull-relative seconds as m:ss.
 
 To add a new visualization:
 1. Create `src/visualizations/my-viz.ts` exporting a function that returns a `Visualization`
-2. Import it in `src/dashboard/render.ts` and add `vizCard(myViz(data))` to the grid in `renderFightPage`
+2. Import it in `src/dashboard/render.ts` and add `vizCard(myViz(pull))` to the grid in `renderPullPage` (or a trend to `renderNightPage`)
 
 **Dashboard rendering** (`src/dashboard/`):
 - `layout.ts` — full HTML shell with CDN scripts (Vega, Vega-Lite, vega-embed) and CSS
-- `render.ts` — page assembly functions: `renderAuthPage`, `renderHomePage`, `renderReportPage`, `renderFightPage`. The `rateBadge()` helper reads `getLastRateLimit()` and injects a usage badge into every page header.
+- `render.ts` — `renderAuthPage`, `renderHomePage`, `renderNightPage` (headline tiles, pull-by-pull table grouped by boss, per-pull trend charts), `renderPullPage` (headline tiles with comparison to your other pulls on the boss, HoT count, cooldown timeline, CPM, HPS, mana, breakdowns, deaths). Names from the API go through `esc()`.
 
 **WCL API notes**:
 - Uses the `user` endpoint (`/api/v2/user`) so private reports are accessible
 - The `table` and `graph` GraphQL fields return a `JSON` scalar wrapped in `{ data: { ... } }`, so actual data is at `response.reportData.report.table.data`
+- In the Healing table, `total` is already effective healing; `overheal` is separate (do not subtract it)
+- `events(dataType: Buffs, sourceID: X)` returns auras *on* X, not auras X applied. For the monk's HoTs on the raid, filter by `ability.id IN (...)` and check `sourceID` client-side
+- Events carry a `fight` field, so one stream over many `fightIDs` can be split per pull
+- `wipeCutoff: N` on `table`/`events`/`graph` ends every fight (kills too) at its Nth death. `night.ts` does the same by moving each fight's `endTime` to that death and fetching the healing tables with `wipeCutoff`, so HPS matches the site
 - Fight `startTime`/`endTime` are milliseconds relative to report start
 - Monk healer is auto-detected by `subType === 'Monk'`; `WCL_CHARACTER_NAME` disambiguates when multiple Monks are in a log
 - `rateLimitData` is injected into every query via string replacement in `withRateLimit()` in `client.ts`

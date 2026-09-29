@@ -6,8 +6,12 @@ interface Row {
   effective: number
   overheal: number
   hps: number
-  casts: number
+  hits: number
   pctOverheal: number
+}
+
+function pctOf(part: number, whole: number): number {
+  return whole > 0 ? Math.round((part / whole) * 100) : 0
 }
 
 export function healingBreakdown(table: HealingTableData): Visualization {
@@ -17,11 +21,12 @@ export function healingBreakdown(table: HealingTableData): Visualization {
     .filter((e: HealingEntry) => e.total > 0)
     .map((e: HealingEntry) => ({
       name: e.name,
-      effective: e.total - e.overheal,
-      overheal: e.overheal,
-      hps: Math.round((e.total - e.overheal) / durationSec),
-      casts: e.casts,
-      pctOverheal: e.total > 0 ? Math.round((e.overheal / e.total) * 100) : 0,
+      // WCL's `total` is already effective healing; overheal is reported separately.
+      effective: e.total ?? 0,
+      overheal: e.overheal ?? 0,
+      hps: Math.round((e.total ?? 0) / durationSec),
+      hits: e.hitCount + e.tickCount,
+      pctOverheal: pctOf(e.overheal ?? 0, (e.total ?? 0) + (e.overheal ?? 0)),
     }))
     .sort((a, b) => b.effective - a.effective)
     .slice(0, 20)
@@ -67,7 +72,7 @@ export function healingBreakdown(table: HealingTableData): Visualization {
           { field: 'overheal', type: 'quantitative', title: 'Overheal', format: ',.0f' },
           { field: 'pctOverheal', type: 'quantitative', title: 'OH %', format: 'd' },
           { field: 'hps', type: 'quantitative', title: 'HPS', format: ',.0f' },
-          { field: 'casts', type: 'quantitative', title: 'Casts' },
+          { field: 'hits', type: 'quantitative', title: 'Hits' },
         ],
       },
       config: darkTheme,
