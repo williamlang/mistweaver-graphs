@@ -61,7 +61,7 @@ export interface Dip {
 }
 
 // A dip is a window at least this far below the pull's own level.
-const MIN_DROP: Record<MetricKey, number> = { rem: 0.1, kick: 0.15, cpm: 0.25 }
+export const MIN_DROP: Record<MetricKey, number> = { rem: 0.1, kick: 0.15, cpm: 0.25 }
 const MAX_DIPS_PER_METRIC = 3
 
 export function findDips(p: PullAnalysis): Dip[] {

@@ -16,6 +16,7 @@ import { pullTrend, pullLabel, type TrendMetric } from '../visualizations/night-
 import type { Visualization } from '../visualizations/types.js'
 import { contextStrip, metricTimeline, alignedTimeline } from '../visualizations/dip-timeline.js'
 import { loadMulti, nightLabel, pullKey, type MultiLoad } from '../mw/multi.js'
+import { findPatterns, type Pattern } from '../mw/patterns.js'
 import {
   findDips, contextBreakdown, phaseBreakdown, alignedAverage, rates, METRICS,
   type Dip, type MetricKey, type Rates, type ContextRow,
@@ -231,6 +232,63 @@ function dipList(
       ${href ? `<a href="${href(p)}">${esc(label(p))}</a> ` : ''}${dipLine(d, names(p))}</li>`).join('')}</ul>`
 }
 
+
+// ── Recurring dips ─────────────────────────────────────────────────────────
+
+const ORDINAL = ['', '', '2nd', '3rd', '4th', '5th']
+
+function patternWhere(p: Pattern, names: PhaseName[]): string {
+  const span = `${formatDuration(p.start * 1000)}–${formatDuration(p.end * 1000)}`
+  if (p.phase === null) return `${span} into the pull`
+  const name = names.find(n => n.id === p.phase)?.name ?? `Phase ${p.phase}`
+  const again = p.phaseOccurrence > 1 ? ` (${ORDINAL[p.phaseOccurrence] ?? `${p.phaseOccurrence}th`} time)` : ''
+  return `${esc(name)}${again}, ${span} in`
+}
+
+function patternLine(p: Pattern, names: PhaseName[], href: (p: PullAnalysis) => string, pullLabel: (p: PullAnalysis) => string): string {
+  const hits = p.hits.map(h => `<a href="${href(h.pull)}">${esc(pullLabel(h.pull))} at ${formatDuration(h.pullStart * 1000)}</a>`).join(' · ')
+  return `<li>
+    <strong>${esc(p.bossName)}</strong> <span class="muted">${difficultyName(p.difficulty)}</span> ·
+    <strong>${METRICS[p.metric].short} ${fmtMetric(p.metric, p.value)}</strong>
+    <span class="muted">vs ${fmtMetric(p.metric, p.baseline)} for those pulls (−${pct(p.drop)})</span>
+    <span class="dip-ctx">${patternWhere(p, names)} · ${p.hits.length} of ${p.pullsReached} pulls${p.moving !== null ? ` · moving ${pct(p.moving)}` : ''}</span>
+    <span class="dip-ctx">${hits}</span>
+  </li>`
+}
+
+// Openers repeat on nearly every boss, so they're summed up per metric instead of listed.
+function openerLine(metric: MetricKey, ps: Pattern[]): string {
+  const bosses = [...new Set(ps.map(p => `${p.bossName} ${difficultyName(p.difficulty)}`.trim()))]
+  const hits = ps.reduce((n, p) => n + p.hits.length, 0)
+  const reached = ps.reduce((n, p) => n + p.pullsReached, 0)
+  const value = ps.reduce((n, p) => n + p.value * p.hits.length, 0) / hits
+  const baseline = ps.reduce((n, p) => n + p.baseline * p.hits.length, 0) / hits
+  return `<li><strong>Opener · ${METRICS[metric].short} ${fmtMetric(metric, value)}</strong>
+    <span class="muted">vs ${fmtMetric(metric, baseline)} for those pulls</span>
+    <span class="dip-ctx">First seconds of the pull on ${bosses.length} boss${bosses.length === 1 ? '' : 'es'} (${hits} of ${reached} pulls): ${bosses.map(esc).join(', ')}</span></li>`
+}
+
+const MAX_PATTERNS_SHOWN = 8
+
+function patternList(
+  patterns: Pattern[],
+  names: (encounterID: number) => PhaseName[],
+  href: (p: PullAnalysis) => string,
+  pullLabel: (p: PullAnalysis) => string,
+): string {
+  const openers = patterns.filter(p => p.opener)
+  const rest = patterns.filter(p => !p.opener).slice(0, MAX_PATTERNS_SHOWN)
+  const openerLines = (['rem', 'kick', 'cpm'] as MetricKey[])
+    .map(m => [m, openers.filter(p => p.metric === m)] as const)
+    .filter(([, ps]) => ps.length > 0)
+    .map(([m, ps]) => openerLine(m, ps))
+  if (rest.length === 0 && openerLines.length === 0) {
+    return '<p class="hint">No dip repeated at the same spot across pulls of the same boss. Patterns need at least two pulls on a boss.</p>'
+  }
+  return `<ul class="dips">${rest.map(p => patternLine(p, names(p.encounterID), href, pullLabel)).join('')}${openerLines.join('')}</ul>
+    <p class="hint">A spot counts when most pulls that reached it dipped there. Bosses with phase data are lined up by time into the phase, others by time into the pull.</p>`
+}
+
 // ── Pages ──────────────────────────────────────────────────────────────────
 
 // The WarcraftLogs credentials are the viewer's own and stay in their browser. The form
@@ -420,10 +478,17 @@ export async function renderNightPage(code: string, playerID: number | null, cut
     [{ id: 't-mana', title: 'Mana at end of pull', value: p => p.mana.endPct, format: '.0%', domain: [0, 1] }, judged.length ? judged.reduce((a, p) => a + p.mana.endPct, 0) / judged.length : 0],
   ]
   const bl = (p: PullAnalysis) => bossHref(code, monk.id, cutoff, p.encounterID, p.difficulty)
+  const order = new Map(pulls.map((p, i) => [pullKey(p), i + 1]))
   const nightDips = dipList(
-    judged.flatMap(p => findDips(p).map(d => ({ d, p }))).sort((a, b) => b.d.drop - a.d.drop).slice(0, 8),
+    judged.flatMap(p => findDips(p).map(d => ({ d, p }))).sort((a, b) => b.d.drop - a.d.drop).slice(0, 5),
     p => phaseNamesFor(report, p.encounterID),
     href,
+  )
+  const recurring = patternList(
+    findPatterns(pulls),
+    id => phaseNamesFor(report, id),
+    href,
+    p => `#${order.get(pullKey(p))}`,
   )
   const trendCards = trends.map(([m, avg]) => vizCard(pullTrend(judged, { ...m, badge: `night ${d3ish(avg, m.format)}` }, href, avg))).join('')
 
@@ -438,7 +503,8 @@ export async function renderNightPage(code: string, playerID: number | null, cut
       <div class="dashboard-grid">
         <div class="card wide">${contextTable(contextBreakdown(pulls))}
           <p class="hint">Time you spent dead, and the tail of a wipe once 30% of the raid is down, are left out. Moving is measured from your position, sampled several times a second.</p></div>
-        <div class="card wide"><div class="card-title">Biggest dips tonight</div>${nightDips}</div>
+        <div class="card wide"><div class="card-title">Recurring dips <span class="muted">— the same spot of the same boss, pull after pull</span></div>${recurring}
+          <div class="card-title" style="margin-top:1.25rem">Biggest single dips</div>${nightDips}</div>
       </div>
       <div class="section-label" style="margin-top:1.5rem">Across the night <span class="muted">— dashed line is the night average; click a bar to open the pull</span></div>
       <div class="dashboard-grid trends">${trendCards}</div>
@@ -660,8 +726,11 @@ function bossAnalysis(
     label,
   )
 
+  const recurring = patternList(findPatterns(pulls), () => names, href, label)
+
   return `<div class="dashboard-grid">
     <div class="card wide"><div class="card-title">By phase</div>${phaseTable}</div>
+    <div class="card wide"><div class="card-title">Recurring dips on this boss</div>${recurring}</div>
     <div class="card wide"><div class="card-title">Biggest dips on this boss</div>${dips}</div>
     ${aligned}
   </div>`
@@ -745,6 +814,17 @@ function bossTrends(pulls: PullAnalysis[], cutoff: number | null): string {
     vizCard(pullTrend(judged, { ...m, badge: `avg ${d3ish(avg, m.format)}` }, pullHref(cutoff), avg))).join('')}</div>`
 }
 
+// Phase names come from whichever report has them for this boss.
+function multiPhaseNames(m: MultiLoad, encounterID: number): PhaseName[] {
+  return m.sources.map(src => phaseNamesFor(src.report, encounterID)).find(n => n.length) ?? []
+}
+
+// "Mar 25 #3": the night and the pull's number within that night.
+function multiPullLabel(all: PullAnalysis[], p: PullAnalysis): string {
+  const n = all.filter(o => o.reportCode === p.reportCode && o.startMs <= p.startMs).length
+  return `${nightLabel(p.reportStartTime)} #${n}`
+}
+
 async function multiOrError(codes: string[], name: string | null, cutoff: number | null): Promise<MultiLoad | string> {
   if (codes.length === 0) return renderErrorPage('No reports given.', '#/')
   const m = await loadMulti(codes, name, cutoff)
@@ -784,6 +864,10 @@ export async function renderMultiPage(codes: string[], name: string | null, cuto
     <div class="container">
       ${multiControls(m, codes, cutoff, '#/multi')}
       ${nightTiles(summarize(m.pulls))}
+      <div class="card" style="margin-bottom:1.5rem">
+        <div class="card-title">Recurring dips <span class="muted">— the same spot of the same boss, across nights</span></div>
+        ${patternList(findPatterns(m.pulls), id => multiPhaseNames(m, id), pullHref(cutoff), p => multiPullLabel(m.pulls, p))}
+      </div>
       ${sections || '<div class="error-box">No boss pulls found for this Monk.</div>'}
       <p class="hint">Each boss's charts run across every pull in real-time order; hover a bar for its night. Click a night to open that night's view of the boss.</p>
     </div>`
