@@ -17,6 +17,7 @@ import type { Visualization } from '../visualizations/types.js'
 import { contextStrip, metricTimeline, alignedTimeline } from '../visualizations/dip-timeline.js'
 import { loadMulti, nightLabel, pullKey, type MultiLoad } from '../mw/multi.js'
 import { findPatterns, type Pattern } from '../mw/patterns.js'
+import { nsrtNote, nsrtReminder } from '../mw/nsrt.js'
 import {
   findDips, contextBreakdown, phaseBreakdown, alignedAverage, rates, METRICS,
   type Dip, type MetricKey, type Rates, type ContextRow,
@@ -245,9 +246,15 @@ function patternWhere(p: Pattern, names: PhaseName[]): string {
   return `${esc(name)}${again}, ${span} in`
 }
 
-function patternLine(p: Pattern, names: PhaseName[], href: (p: PullAnalysis) => string, pullLabel: (p: PullAnalysis) => string): string {
+// A button whose text lands on the clipboard (handled in web/main.ts).
+function copyButton(label: string, text: string, title: string): string {
+  return `<button type="button" class="copy-btn" data-copy="${esc(text)}" title="${esc(title)}">${esc(label)}</button>`
+}
+
+function patternLine(p: Pattern, names: PhaseName[], href: (p: PullAnalysis) => string, pullLabel: (p: PullAnalysis) => string, tag: string | null): string {
   const hits = p.hits.map(h => `<a href="${href(h.pull)}">${esc(pullLabel(h.pull))} at ${formatDuration(h.pullStart * 1000)}</a>`).join(' · ')
-  return `<li>
+  const reminder = tag ? copyButton('Copy NSRT reminder', nsrtNote([p], tag), nsrtReminder(p, tag)) : ''
+  return `<li>${reminder}
     <strong>${esc(p.bossName)}</strong> <span class="muted">${difficultyName(p.difficulty)}</span> ·
     <strong>${METRICS[p.metric].short} ${fmtMetric(p.metric, p.value)}</strong>
     <span class="muted">vs ${fmtMetric(p.metric, p.baseline)} for those pulls (−${pct(p.drop)})</span>
@@ -275,6 +282,8 @@ function patternList(
   names: (encounterID: number) => PhaseName[],
   href: (p: PullAnalysis) => string,
   pullLabel: (p: PullAnalysis) => string,
+  tag: string | null,
+  copyAll = false,
 ): string {
   const openers = patterns.filter(p => p.opener)
   const rest = patterns.filter(p => !p.opener).slice(0, MAX_PATTERNS_SHOWN)
@@ -285,8 +294,12 @@ function patternList(
   if (rest.length === 0 && openerLines.length === 0) {
     return '<p class="hint">No dip repeated at the same spot across pulls of the same boss. Patterns need at least two pulls on a boss.</p>'
   }
-  return `<ul class="dips">${rest.map(p => patternLine(p, names(p.encounterID), href, pullLabel)).join('')}${openerLines.join('')}</ul>
-    <p class="hint">A spot counts when most pulls that reached it dipped there. Bosses with phase data are lined up by time into the phase, others by time into the pull.</p>`
+  // "Copy all" only makes sense for one boss: an NSRT note belongs to one encounter.
+  const all = copyAll && tag ? nsrtNote(patterns, tag) : ''
+  const allButton = all ? `<div class="copy-all">${copyButton('Copy all as NSRT reminders', all, all)}</div>` : ''
+  return `${allButton}<ul class="dips">${rest.map(p => patternLine(p, names(p.encounterID), href, pullLabel, tag)).join('')}${openerLines.join('')}</ul>
+    <p class="hint">A spot counts when most pulls that reached it dipped there. Bosses with phase data are lined up by time into the phase, others by time into the pull.
+    ${tag ? `NSRT reminders are tagged for ${esc(tag)}; paste them into an NSRT reminder note. Their phase counts every phase change, like NSRT does, so check it on bosses whose phases repeat.` : ''}</p>`
 }
 
 // ── Pages ──────────────────────────────────────────────────────────────────
@@ -489,6 +502,7 @@ export async function renderNightPage(code: string, playerID: number | null, cut
     id => phaseNamesFor(report, id),
     href,
     p => `#${order.get(pullKey(p))}`,
+    monk.name,
   )
   const trendCards = trends.map(([m, avg]) => vizCard(pullTrend(judged, { ...m, badge: `night ${d3ish(avg, m.format)}` }, href, avg))).join('')
 
@@ -666,7 +680,7 @@ export async function renderBossPage(code: string, encounterID: number, difficul
 
   const order = new Map(all.map((p, i) => [pullKey(p), i + 1]))
   const analysis = bossAnalysis(pulls, all, phaseNamesFor(report, encounterID), cutoff,
-    p => `#${order.get(pullKey(p))} ${pullLabel(p)}`, 'your whole night')
+    p => `#${order.get(pullKey(p))} ${pullLabel(p)}`, 'your whole night', monk.name)
 
   const title = `${pulls[0].name} (${difficultyName(pulls[0].difficulty)})`
   const dropdown = playerDropdown(monks, monk.id, id => `#/report/${code}/boss/${encounterID}/${difficulty}${query(id, cutoff)}`)
@@ -699,6 +713,7 @@ function bossAnalysis(
   cutoff: number | null,
   label: (p: PullAnalysis) => string,
   against: string,
+  tag: string | null,
 ): string {
   const href = pullHref(cutoff)
   const judged = pulls.filter(p => p.durationMs >= MIN_JUDGED_PULL_MS)
@@ -726,7 +741,7 @@ function bossAnalysis(
     label,
   )
 
-  const recurring = patternList(findPatterns(pulls), () => names, href, label)
+  const recurring = patternList(findPatterns(pulls), () => names, href, label, tag, true)
 
   return `<div class="dashboard-grid">
     <div class="card wide"><div class="card-title">By phase</div>${phaseTable}</div>
@@ -866,7 +881,7 @@ export async function renderMultiPage(codes: string[], name: string | null, cuto
       ${nightTiles(summarize(m.pulls))}
       <div class="card" style="margin-bottom:1.5rem">
         <div class="card-title">Recurring dips <span class="muted">— the same spot of the same boss, across nights</span></div>
-        ${patternList(findPatterns(m.pulls), id => multiPhaseNames(m, id), pullHref(cutoff), p => multiPullLabel(m.pulls, p))}
+        ${patternList(findPatterns(m.pulls), id => multiPhaseNames(m, id), pullHref(cutoff), p => multiPullLabel(m.pulls, p), m.monkName)}
       </div>
       ${sections || '<div class="error-box">No boss pulls found for this Monk.</div>'}
       <p class="hint">Each boss's charts run across every pull in real-time order; hover a bar for its night. Click a night to open that night's view of the boss.</p>
@@ -896,7 +911,7 @@ export async function renderMultiBossPage(codes: string[], name: string | null, 
       ${bossTiles(summarize(pulls))}
       <div class="card" style="margin-bottom:1.25rem"><div class="card-title">By night</div>${byNightTable(pulls, cutoff, oneNight)}</div>
       ${bossTrends(pulls, cutoff)}
-      <div style="margin-top:1.25rem">${bossAnalysis(pulls, m.pulls, names, cutoff, label, 'all your boss pulls in these reports')}</div>
+      <div style="margin-top:1.25rem">${bossAnalysis(pulls, m.pulls, names, cutoff, label, 'all your boss pulls in these reports', m.monkName)}</div>
     </div>`
   return htmlLayout(`${title} across nights — Mistweaver Graphs`, body)
 }

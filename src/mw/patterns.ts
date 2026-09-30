@@ -37,6 +37,9 @@ export interface Pattern {
   metric: MetricKey
   phase: number | null // phase the stretch is aligned to; null = aligned to pull start
   phaseOccurrence: number // 1 the first time the phase happens in a pull, 2 when it returns, ...
+  // Phase segment the stretch sits in, counting every phase change (1, 2, 3, ...), and
+  // the offset into it. This is how NSRT numbers phases: they only ever count up.
+  segment: number
   start: number        // seconds from the phase (or pull) start
   end: number
   opener: boolean
@@ -70,6 +73,15 @@ function slots(p: PullAnalysis, byPhase: boolean): Slot[] {
     out.push({ key: runKey, offset: s.t - runStart })
   }
   return out
+}
+
+// 1-based count of phase segments up to second t of a pull: 1 until the first phase change.
+function segmentAt(p: PullAnalysis, t: number): number {
+  let segment = 1
+  for (let i = 1; i <= t && i < p.timeline.length; i++) {
+    if (p.timeline[i].phase !== p.timeline[i - 1].phase) segment++
+  }
+  return segment
 }
 
 export function findPatterns(pulls: PullAnalysis[]): Pattern[] {
@@ -173,6 +185,7 @@ function bossPatterns(pulls: PullAnalysis[], metric: MetricKey, byPhase: boolean
         metric,
         phase: phase !== null && !Number.isNaN(phase) ? phase : null,
         phaseOccurrence: Number(occurrence) || 1,
+        segment: byPhase ? mostCommon(hits.map(h => segmentAt(h.pull, h.pullStart))) : 1,
         start: a,
         end: b + 1,
         opener: hits.every(h => h.pullStart <= OPENER_START_S),
@@ -186,4 +199,10 @@ function bossPatterns(pulls: PullAnalysis[], metric: MetricKey, byPhase: boolean
     }
   }
   return patterns
+}
+
+function mostCommon(xs: number[]): number {
+  const counts = new Map<number, number>()
+  for (const x of xs) counts.set(x, (counts.get(x) ?? 0) + 1)
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]?.[0] ?? 1
 }

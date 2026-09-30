@@ -47,6 +47,34 @@ document.addEventListener('submit', event => {
   }
 })
 
+// Copy buttons (NSRT reminders): clipboard API, with a textarea fallback for browsers
+// that block it, and a short "Copied" confirmation on the button.
+document.addEventListener('click', event => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-copy]')
+  if (!button) return
+  void copyText(button.dataset.copy ?? '').then(ok => {
+    const label = button.textContent
+    button.textContent = ok ? 'Copied' : 'Copy failed'
+    button.classList.toggle('copied', ok)
+    setTimeout(() => { button.textContent = label; button.classList.remove('copied') }, 1500)
+  })
+})
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {
+    const area = document.createElement('textarea')
+    area.value = text
+    document.body.appendChild(area)
+    area.select()
+    const ok = document.execCommand('copy')
+    area.remove()
+    return ok
+  }
+}
+
 document.addEventListener('click', event => {
   const target = (event.target as HTMLElement).closest<HTMLElement>('[data-action="forget-settings"]')
   if (!target) return
