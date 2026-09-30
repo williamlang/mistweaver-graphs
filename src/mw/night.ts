@@ -2,7 +2,7 @@ import type { Report, Fight, Actor, WclEvent, DeathEntry } from '../wcl/types.js
 import { fetchReport, fetchEvents, fetchHealingTables, fetchDeaths } from '../wcl/client.js'
 import { analyzePull, type PullAnalysis } from './analyze.js'
 import { TRACKED_BUFFS } from './spells.js'
-import { CHARACTER_NAME } from '../config.js'
+import { getSettings } from '../settings.js'
 
 // Reports can be live-logged, so the fight list goes stale quickly. A fight that
 // appears in the list has ended, so its analysis never changes and is cached forever.
@@ -26,8 +26,9 @@ export function resolveMonk(report: Report, playerID: number | null): Actor | nu
   const monks = getMonks(report)
   if (monks.length === 0) return null
   if (playerID) return monks.find(m => m.id === playerID) ?? monks[0]
-  if (CHARACTER_NAME) {
-    const mine = monks.find(m => m.name.toLowerCase() === CHARACTER_NAME.toLowerCase())
+  const characterName = getSettings().characterName
+  if (characterName) {
+    const mine = monks.find(m => m.name.toLowerCase() === characterName.toLowerCase())
     if (mine) return mine
   }
   return monks[0]

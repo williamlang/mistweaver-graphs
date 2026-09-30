@@ -21,7 +21,7 @@ import {
   type Dip, type MetricKey, type Rates, type ContextRow,
 } from '../mw/dips.js'
 import type { Report } from '../wcl/types.js'
-import { DEFAULT_DEATH_CUTOFF } from '../config.js'
+import { getSettings, hasCredentials, WCL_CLIENTS_URL } from '../settings.js'
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -75,7 +75,8 @@ function rateBadge(): string {
 }
 
 function header(breadcrumbs: string): string {
-  return `<header><h1><a href="/">Mistweaver Graphs</a></h1><nav>${breadcrumbs}</nav>${rateBadge()}</header>`
+  return `<header><h1><a href="#/">Mistweaver Graphs</a></h1><nav>${breadcrumbs}</nav>${rateBadge()}
+    <a class="settings-link" href="#/settings">Settings</a></header>`
 }
 
 function escapeAttr(json: string): string {
@@ -117,16 +118,16 @@ function cdCell(cd: CooldownResult | undefined): string {
 // Page state lives in the query string so every link carries it: the Monk, and the
 // death cutoff when it differs from the .env default (cutoff=0 means off).
 function query(monkId: number, cutoff: number | null): string {
-  const c = cutoff === DEFAULT_DEATH_CUTOFF ? '' : `&cutoff=${cutoff ?? 0}`
+  const c = cutoff === getSettings().deathCutoff ? '' : `&cutoff=${cutoff ?? 0}`
   return `?player=${monkId}${c}`
 }
 
 function pullHref(cutoff: number | null) {
-  return (p: PullAnalysis) => `/report/${p.reportCode}/fight/${p.fightId}${query(p.monkId, cutoff)}`
+  return (p: PullAnalysis) => `#/report/${p.reportCode}/fight/${p.fightId}${query(p.monkId, cutoff)}`
 }
 
 function multiQuery(codes: string[], name: string | null, cutoff: number | null): string {
-  const c = cutoff === DEFAULT_DEATH_CUTOFF ? '' : `&cutoff=${cutoff ?? 0}`
+  const c = cutoff === getSettings().deathCutoff ? '' : `&cutoff=${cutoff ?? 0}`
   return `?logs=${codes.map(encodeURIComponent).join(',')}${name ? `&name=${encodeURIComponent(name)}` : ''}${c}`
 }
 
@@ -161,7 +162,7 @@ function phaseNamesFor(report: Report, encounterID: number): PhaseName[] {
 }
 
 function bossHref(code: string, monkId: number, cutoff: number | null, encounterID: number, difficulty: number | null) {
-  return `/report/${code}/boss/${encounterID}/${difficulty ?? 0}${query(monkId, cutoff)}`
+  return `#/report/${code}/boss/${encounterID}/${difficulty ?? 0}${query(monkId, cutoff)}`
 }
 
 function fmtMetric(metric: MetricKey, v: number): string {
@@ -232,24 +233,47 @@ function dipList(
 
 // ── Pages ──────────────────────────────────────────────────────────────────
 
-export function renderAuthPage(authUrl: string): string {
+// The WarcraftLogs credentials are the viewer's own and stay in their browser. The form
+// is saved by the page script (web/main.ts), never through the URL, so the secret doesn't
+// end up in history.
+export function renderSettingsPage(message: { text: string; ok: boolean } | null = null): string {
+  const st = getSettings()
+  const cutoffs = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20]
   const body = `
-    ${header('')}
-    <div class="container">
-      <div class="auth-center">
-        <h2>Mistweaver Graphs</h2>
-        <p>Connect your WarcraftLogs account to analyze your Mistweaver Monk logs.</p>
-        <a href="${esc(authUrl)}" class="btn-primary">Authorize with WarcraftLogs</a>
-      </div>
+    ${header('<span>Settings</span>')}
+    <div class="container settings">
+      ${message ? `<div class="${message.ok ? 'ok-box' : 'error-box'}">${esc(message.text)}</div>` : ''}
+      <form data-action="save-settings" class="settings-form" autocomplete="off">
+        <h2>WarcraftLogs API client</h2>
+        <p class="hint">
+          Create a client at <a href="${WCL_CLIENTS_URL}" target="_blank" rel="noopener">warcraftlogs.com/api/clients</a>
+          (any redirect URL works) and paste its ID and secret here. They're stored only in this browser and only
+          sent to WarcraftLogs. Reports must be public or unlisted.
+        </p>
+        <div class="field"><label for="clientId">Client ID</label>
+          <input id="clientId" name="clientId" type="text" value="${esc(st.clientId)}" required spellcheck="false"></div>
+        <div class="field"><label for="clientSecret">Client secret</label>
+          <input id="clientSecret" name="clientSecret" type="password" value="${esc(st.clientSecret)}" required spellcheck="false"></div>
+        <h2>Defaults</h2>
+        <div class="field"><label for="characterName">Your character name</label>
+          <input id="characterName" name="characterName" type="text" value="${esc(st.characterName)}" placeholder="Picks you when a log has several Monks"></div>
+        <div class="field"><label for="deathCutoff">Ignore after</label>
+          <select id="deathCutoff" name="deathCutoff">
+            <option value="0" ${st.deathCutoff ? '' : 'selected'}>Off</option>
+            ${cutoffs.map(n => `<option value="${n}" ${st.deathCutoff === n ? 'selected' : ''}>${n} death${n === 1 ? '' : 's'}</option>`).join('')}
+          </select></div>
+        <div class="form-row"><button type="submit">Save</button>
+          ${hasCredentials() ? '<button type="button" class="btn-secondary" data-action="forget-settings">Forget credentials</button>' : ''}</div>
+      </form>
     </div>`
-  return htmlLayout('Mistweaver Graphs', body)
+  return htmlLayout('Settings — Mistweaver Graphs', body)
 }
 
 export function renderHomePage(): string {
   const body = `
     ${header('')}
     <div class="container">
-      <form class="form-row" action="/go" method="get">
+      <form class="form-row" data-route="/go">
         <div class="field grow">
           <label for="log">WarcraftLogs URLs</label>
           <textarea id="log" name="log" rows="3" autocomplete="off" required
@@ -265,7 +289,7 @@ export function renderHomePage(): string {
   return htmlLayout('Mistweaver Graphs', body)
 }
 
-export function renderErrorPage(message: string, backHref = '/'): string {
+export function renderErrorPage(message: string, backHref = '#/'): string {
   const body = `
     ${header(`<a href="${esc(backHref)}">← Back</a>`)}
     <div class="container">
@@ -366,13 +390,13 @@ export async function renderNightPage(code: string, playerID: number | null, cut
   const report = await getReport(code)
   const monks = getMonks(report)
   const monk = resolveMonk(report, playerID)
-  if (!monk) return renderErrorPage('No Monk found in this report.', '/')
+  if (!monk) return renderErrorPage('No Monk found in this report.', '#/')
 
   const fights = bossPulls(report, monk.id)
-  const crumbs = `<a href="/">Home</a> <span>›</span> <span>${esc(report.title)}</span>`
-  const dropdown = playerDropdown(monks, monk.id, id => `/report/${code}${query(id, cutoff)}`)
+  const crumbs = `<a href="#/">Home</a> <span>›</span> <span>${esc(report.title)}</span>`
+  const dropdown = playerDropdown(monks, monk.id, id => `#/report/${code}${query(id, cutoff)}`)
   const monkRow = `<div class="form-row"><div class="field"><label>Mistweaver</label>${dropdown}</div>
-    ${cutoffSelect(cutoff, c => `/report/${code}${query(monk.id, c)}`)}
+    ${cutoffSelect(cutoff, c => `#/report/${code}${query(monk.id, c)}`)}
     <a class="wcl-link" href="https://www.warcraftlogs.com/reports/${encodeURIComponent(code)}" target="_blank" rel="noopener">Open on WarcraftLogs ↗</a></div>`
 
   if (fights.length === 0) {
@@ -444,11 +468,11 @@ export async function renderPullPage(code: string, fightId: number, playerID: nu
   const report = await getReport(code)
   const monks = getMonks(report)
   const monk = resolveMonk(report, playerID)
-  if (!monk) return renderErrorPage('No Monk found in this report.', `/report/${code}`)
+  if (!monk) return renderErrorPage('No Monk found in this report.', `#/report/${code}`)
 
   const fights = bossPulls(report, monk.id)
   const fight = fights.find(f => f.id === fightId)
-  if (!fight) return renderErrorPage(`Fight #${fightId} is not a boss pull with ${monk.name} in it.`, `/report/${code}${query(monk.id, cutoff)}`)
+  if (!fight) return renderErrorPage(`Fight #${fightId} is not a boss pull with ${monk.name} in it.`, `#/report/${code}${query(monk.id, cutoff)}`)
 
   // Loading the whole night is one batched request and fills the cache for the
   // neighbouring pulls, which the comparisons need anyway.
@@ -459,7 +483,7 @@ export async function renderPullPage(code: string, fightId: number, playerID: nu
   const cutHeals = (p: PullAnalysis) => heals.filter(e => e.timestamp <= p.startMs + p.durationMs)
   const idx = pulls.findIndex(p => p.fightId === fightId)
   const p = pulls[idx]
-  if (!p) return renderErrorPage('Could not load this pull.', `/report/${code}${query(monk.id, cutoff)}`)
+  if (!p) return renderErrorPage('Could not load this pull.', `#/report/${code}${query(monk.id, cutoff)}`)
 
   const href = pullHref(cutoff)
   const siblings = pulls.filter(o =>
@@ -542,15 +566,15 @@ export async function renderPullPage(code: string, fightId: number, playerID: nu
     deaths,
   ].join('\n')
 
-  const dropdown = playerDropdown(monks, monk.id, id => `/report/${code}/fight/${fightId}${query(id, cutoff)}`)
-  const nightHref = `/report/${code}${query(monk.id, cutoff)}`
+  const dropdown = playerDropdown(monks, monk.id, id => `#/report/${code}/fight/${fightId}${query(id, cutoff)}`)
+  const nightHref = `#/report/${code}${query(monk.id, cutoff)}`
   const title = `${p.name} #${bossPullNo}`
   const body = `
-    ${header(`<a href="/">Home</a> <span>›</span> <a href="${nightHref}">${esc(report.title)}</a> <span>›</span> <span>${esc(title)}</span>`)}
+    ${header(`<a href="#/">Home</a> <span>›</span> <a href="${nightHref}">${esc(report.title)}</a> <span>›</span> <span>${esc(title)}</span>`)}
     <div class="container">
       <div class="form-row">
         <div class="field"><label>Mistweaver</label>${dropdown}</div>
-        ${cutoffSelect(cutoff, c => `/report/${code}/fight/${fightId}${query(monk.id, c)}`)}
+        ${cutoffSelect(cutoff, c => `#/report/${code}/fight/${fightId}${query(monk.id, c)}`)}
         <a class="wcl-link" href="https://www.warcraftlogs.com/reports/${encodeURIComponent(code)}?fight=${fightId}&type=healing&source=${monk.id}" target="_blank" rel="noopener">Open on WarcraftLogs ↗</a>
       </div>
       ${pager}
@@ -567,25 +591,25 @@ export async function renderBossPage(code: string, encounterID: number, difficul
   const report = await getReport(code)
   const monks = getMonks(report)
   const monk = resolveMonk(report, playerID)
-  if (!monk) return renderErrorPage('No Monk found in this report.', `/report/${code}`)
+  if (!monk) return renderErrorPage('No Monk found in this report.', `#/report/${code}`)
 
   const fights = bossPulls(report, monk.id)
   const all = await loadPulls(code, report, fights, monk.id, cutoff)
   const pulls = all.filter(p => p.encounterID === encounterID && (p.difficulty ?? 0) === difficulty)
-  if (pulls.length === 0) return renderErrorPage('No pulls on that boss in this report.', `/report/${code}${query(monk.id, cutoff)}`)
+  if (pulls.length === 0) return renderErrorPage('No pulls on that boss in this report.', `#/report/${code}${query(monk.id, cutoff)}`)
 
   const order = new Map(all.map((p, i) => [pullKey(p), i + 1]))
   const analysis = bossAnalysis(pulls, all, phaseNamesFor(report, encounterID), cutoff,
     p => `#${order.get(pullKey(p))} ${pullLabel(p)}`, 'your whole night')
 
   const title = `${pulls[0].name} (${difficultyName(pulls[0].difficulty)})`
-  const dropdown = playerDropdown(monks, monk.id, id => `/report/${code}/boss/${encounterID}/${difficulty}${query(id, cutoff)}`)
-  const nightHref = `/report/${code}${query(monk.id, cutoff)}`
+  const dropdown = playerDropdown(monks, monk.id, id => `#/report/${code}/boss/${encounterID}/${difficulty}${query(id, cutoff)}`)
+  const nightHref = `#/report/${code}${query(monk.id, cutoff)}`
   const body = `
-    ${header(`<a href="/">Home</a> <span>›</span> <a href="${nightHref}">${esc(report.title)}</a> <span>›</span> <span>${esc(title)}</span>`)}
+    ${header(`<a href="#/">Home</a> <span>›</span> <a href="${nightHref}">${esc(report.title)}</a> <span>›</span> <span>${esc(title)}</span>`)}
     <div class="container">
       <div class="form-row"><div class="field"><label>Mistweaver</label>${dropdown}</div>
-        ${cutoffSelect(cutoff, c => `/report/${code}/boss/${encounterID}/${difficulty}${query(monk.id, c)}`)}</div>
+        ${cutoffSelect(cutoff, c => `#/report/${code}/boss/${encounterID}/${difficulty}${query(monk.id, c)}`)}</div>
       ${bossTiles(summarize(pulls))}
       ${analysis}
     </div>`
@@ -646,10 +670,10 @@ function bossAnalysis(
 // ── Several reports ────────────────────────────────────────────────────────
 
 function addReportForm(codes: string[], name: string | null, cutoff: number | null): string {
-  return `<form class="form-row" action="/go" method="get">
+  return `<form class="form-row" data-route="/go">
     <input type="hidden" name="logs" value="${esc(codes.join(','))}">
     ${name ? `<input type="hidden" name="name" value="${esc(name)}">` : ''}
-    ${cutoff !== DEFAULT_DEATH_CUTOFF ? `<input type="hidden" name="cutoff" value="${cutoff ?? 0}">` : ''}
+    ${cutoff !== getSettings().deathCutoff ? `<input type="hidden" name="cutoff" value="${cutoff ?? 0}">` : ''}
     <div class="field grow"><label for="more">Add reports</label>
       <textarea id="more" name="log" rows="2" required placeholder="Paste one or more WarcraftLogs URLs, one per line"></textarea></div>
     <button type="submit">Compare</button>
@@ -668,8 +692,8 @@ function multiControls(m: MultiLoad, codes: string[], cutoff: number | null, pat
   const reportRows = m.sources.map(src => {
     const mine = m.pulls.filter(p => p.reportCode === src.code)
     const others = codes.filter(c => c !== src.code)
-    const remove = others.length ? `<a class="muted" href="${others.length === 1 ? `/report/${others[0]}` : `/multi${multiQuery(others, m.monkName, cutoff)}`}">remove</a>` : ''
-    const night = src.monk ? `<a href="/report/${src.code}${query(src.monk.id, cutoff)}">${esc(src.report.title)}</a>` : esc(src.report.title)
+    const remove = others.length ? `<a class="muted" href="${others.length === 1 ? `#/report/${others[0]}` : `#/multi${multiQuery(others, m.monkName, cutoff)}`}">remove</a>` : ''
+    const night = src.monk ? `<a href="#/report/${src.code}${query(src.monk.id, cutoff)}">${esc(src.report.title)}</a>` : esc(src.report.title)
     return `<tr><td class="num">${nightLabel(src.report.startTime)}</td><td>${night}</td>
       <td class="num">${src.monk ? `${mine.length} boss pull${mine.length === 1 ? '' : 's'}` : `<span class="g-bad">${esc(m.monkName ?? 'Monk')} not in this report</span>`}</td><td>${remove}</td></tr>`
   }).join('')
@@ -722,9 +746,9 @@ function bossTrends(pulls: PullAnalysis[], cutoff: number | null): string {
 }
 
 async function multiOrError(codes: string[], name: string | null, cutoff: number | null): Promise<MultiLoad | string> {
-  if (codes.length === 0) return renderErrorPage('No reports given.', '/')
+  if (codes.length === 0) return renderErrorPage('No reports given.', '#/')
   const m = await loadMulti(codes, name, cutoff)
-  if (!m.monkName) return renderErrorPage('None of these reports has a Monk in it.', '/')
+  if (!m.monkName) return renderErrorPage('None of these reports has a Monk in it.', '#/')
   return m
 }
 
@@ -742,7 +766,7 @@ export async function renderMultiPage(codes: string[], name: string | null, cuto
     const killed = g.pulls.some(p => p.kill)
     const best = Math.min(...g.pulls.map(p => (p.kill ? 0 : p.bossPct ?? 100)))
     const n = new Set(g.pulls.map(p => p.reportCode)).size
-    const deep = `/multi/boss/${g.pulls[0].encounterID}/${g.difficulty ?? 0}${multiQuery(codes, m.monkName, cutoff)}`
+    const deep = `#/multi/boss/${g.pulls[0].encounterID}/${g.difficulty ?? 0}${multiQuery(codes, m.monkName, cutoff)}`
     const oneNight = (p: PullAnalysis) => bossHref(p.reportCode, p.monkId, cutoff, p.encounterID, p.difficulty)
     return `<section class="boss-section">
       <div class="boss-head">
@@ -756,9 +780,9 @@ export async function renderMultiPage(codes: string[], name: string | null, cuto
   }).join('')
 
   const body = `
-    ${header(`<a href="/">Home</a> <span>›</span> <span>${nights} night${nights === 1 ? '' : 's'}, by boss</span>`)}
+    ${header(`<a href="#/">Home</a> <span>›</span> <span>${nights} night${nights === 1 ? '' : 's'}, by boss</span>`)}
     <div class="container">
-      ${multiControls(m, codes, cutoff, '/multi')}
+      ${multiControls(m, codes, cutoff, '#/multi')}
       ${nightTiles(summarize(m.pulls))}
       ${sections || '<div class="error-box">No boss pulls found for this Monk.</div>'}
       <p class="hint">Each boss's charts run across every pull in real-time order; hover a bar for its night. Click a night to open that night's view of the boss.</p>
@@ -770,7 +794,7 @@ export async function renderMultiBossPage(codes: string[], name: string | null, 
   const m = await multiOrError(codes, name, cutoff)
   if (typeof m === 'string') return m
   const pulls = m.pulls.filter(p => p.encounterID === encounterID && (p.difficulty ?? 0) === difficulty)
-  if (pulls.length === 0) return renderErrorPage('No pulls on that boss in these reports.', `/multi${multiQuery(codes, m.monkName, cutoff)}`)
+  if (pulls.length === 0) return renderErrorPage('No pulls on that boss in these reports.', `#/multi${multiQuery(codes, m.monkName, cutoff)}`)
 
   const names = m.sources.map(src => phaseNamesFor(src.report, encounterID)).find(n => n.length) ?? []
   const label = (p: PullAnalysis) => {
@@ -778,11 +802,11 @@ export async function renderMultiBossPage(codes: string[], name: string | null, 
     return `${nightLabel(p.reportStartTime)} #${n} ${pullLabel(p)}`
   }
   const title = `${pulls[0].name} (${difficultyName(pulls[0].difficulty)})`
-  const path = `/multi/boss/${encounterID}/${difficulty}`
+  const path = `#/multi/boss/${encounterID}/${difficulty}`
   const oneNight = (p: PullAnalysis) => bossHref(p.reportCode, p.monkId, cutoff, p.encounterID, p.difficulty)
 
   const body = `
-    ${header(`<a href="/">Home</a> <span>›</span> <a href="/multi${multiQuery(codes, m.monkName, cutoff)}">By boss</a> <span>›</span> <span>${esc(title)}</span>`)}
+    ${header(`<a href="#/">Home</a> <span>›</span> <a href="#/multi${multiQuery(codes, m.monkName, cutoff)}">By boss</a> <span>›</span> <span>${esc(title)}</span>`)}
     <div class="container">
       ${multiControls(m, codes, cutoff, path)}
       ${bossTiles(summarize(pulls))}

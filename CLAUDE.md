@@ -6,28 +6,28 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 npm install        # install dependencies
-npm start          # start server (prints URL, no auto-open)
-npm run dev        # start with hot-reload on file changes
+npm run dev        # Vite dev server with hot reload
+npm run build      # typecheck + static build into dist/
+npm run preview    # serve dist/ locally
+npm run typecheck  # tsc only
 ```
 
-## Setup
+## Setup and deployment
 
-Copy `.env.example` to `.env` and fill in credentials:
-1. Create a WarcraftLogs API client at `https://www.warcraftlogs.com/api/clients`
-2. Set the redirect URI to `http://localhost:3456/callback` (must match `PORT` in `.env`)
-3. Add `WCL_CLIENT_ID`, `WCL_CLIENT_SECRET`, and `WCL_CHARACTER_NAME` to `.env`
+The app is a static site: everything, including the WarcraftLogs API calls, runs in the browser. There is no server and no credentials in the repo.
 
-On first run, visit the printed URL and authorize with WarcraftLogs. The token is stored at `~/.config/mistweaver-graphs/token.json` and reused on subsequent runs.
+- On first visit the Settings page (`#/settings`) asks for a WarcraftLogs API client ID and secret (create one at `https://www.warcraftlogs.com/api/clients`; any redirect URL works). They are kept in the viewer's localStorage and only sent to WarcraftLogs' token endpoint (client credentials flow). Settings also holds the default character name and death cutoff.
+- Client-credentials tokens only work with the public endpoint (`/api/v2/client`), so reports must be public or unlisted.
+- `.github/workflows/pages.yml` builds and publishes `dist/` to GitHub Pages on every push to `main` (repo Settings → Pages → Source: GitHub Actions). `vite.config.ts` uses `base: './'` so the build works under `/<repo>/`.
 
 ## Architecture
 
-**Runtime**: Node.js with `tsx` — no build step. TypeScript runs directly.
+**Runtime**: browser only, bundled by Vite. `index.html` holds the page shell, CSS and the Vega/Vega-Lite/vega-embed CDN scripts.
 
-**Backend** (`src/`):
-- `cli.ts` — entry point; validates env, starts Hono server, prints URL
-- `server.ts` — Hono routes: `/` (home/auth), `/callback` (OAuth), `/go?log=<WCL URL>` (parses a pasted URL and redirects), `/report/:code` (the night), `/report/:code/fight/:fightId` (one pull), `/report/:code/boss/:encounterId/:difficulty` (every pull on one boss: where the metrics dip), `/multi?logs=A,B,C&name=<Monk>` (several reports, one section per boss with a by-night table and trends) and `/multi/boss/:encounterId/:difficulty?logs=...` (one boss across those reports). `/go` sends one pasted URL to its night and several to `/multi`. `?player=<actorId>` picks the Monk; `?cutoff=N` ignores everything after the Nth death in each pull, like WarcraftLogs' "ignore after X deaths" (0 = off, default from `WCL_DEATH_CUTOFF`).
-- `auth.ts` — OAuth Authorization Code flow; token stored as JSON in `~/.config/mistweaver-graphs/token.json`
-- `config.ts` — all env vars and constants in one place
+**App shell** (`src/`):
+- `web/main.ts` — entry point: renders the current hash route into `#app`, embeds charts, discards results of navigations the user has already left, and handles forms (`data-route` forms navigate with their fields as the query string; the settings form is saved in-page so the secret never enters the URL)
+- `web/router.ts` — hash routes: `#/` (home), `#/settings`, `#/go?log=<WCL URL>` (parses pasted URLs and redirects), `#/report/:code` (the night), `#/report/:code/fight/:fightId` (one pull), `#/report/:code/boss/:encounterId/:difficulty` (every pull on one boss: where the metrics dip), `#/multi?logs=A,B,C&name=<Monk>` (several reports, one section per boss with a by-night table and trends) and `#/multi/boss/:encounterId/:difficulty?logs=...` (one boss across those reports). `#/go` sends one pasted URL to its night and several to `#/multi`. `?player=<actorId>` picks the Monk; `?cutoff=N` ignores everything after the Nth death in each pull, like WarcraftLogs' "ignore after X deaths" (0 = off, default from Settings).
+- `settings.ts` — localStorage-backed settings and the client-credentials token (cached until shortly before expiry, refetched on a 401)
 - `wcl/client.ts` — `gql<T>()` helper plus `fetchReport`, `fetchEvents` (one paginated stream across many fights), `fetchHealingTables` (one table per fight, batched with GraphQL aliases), `fetchDeaths`. Injects `rateLimitData` into every query and stores latest value via `getLastRateLimit()`
 - `wcl/queries.ts` — GraphQL query strings
 - `wcl/types.ts` — TypeScript types for WCL API responses
@@ -53,18 +53,19 @@ To add a new visualization:
 2. Import it in `src/dashboard/render.ts` and add `vizCard(myViz(pull))` to the grid in `renderPullPage` (or a trend to `renderNightPage`)
 
 **Dashboard rendering** (`src/dashboard/`):
-- `layout.ts` — full HTML shell with CDN scripts (Vega, Vega-Lite, vega-embed) and CSS
+- `layout.ts` — sets the tab title and returns the page body (the shell is `index.html`)
 - `render.ts` — `renderAuthPage`, `renderHomePage`, `renderNightPage` (headline tiles, pull-by-pull table grouped by boss, per-pull trend charts), `renderPullPage` (headline tiles with comparison to your other pulls on the boss, HoT count, cooldown timeline, CPM, HPS, mana, breakdowns, deaths). Names from the API go through `esc()`.
 
 **WCL API notes**:
-- Uses the `user` endpoint (`/api/v2/user`) so private reports are accessible
+- Uses the public `client` endpoint (`/api/v2/client`) with a client-credentials token; private reports would need the user endpoint and a login
 - The `table` and `graph` GraphQL fields return a `JSON` scalar wrapped in `{ data: { ... } }`, so actual data is at `response.reportData.report.table.data`
 - In the Healing table, `total` is already effective healing; `overheal` is separate (do not subtract it)
 - `events(dataType: Buffs, sourceID: X)` returns auras *on* X, not auras X applied. For the monk's HoTs on the raid, filter by `ability.id IN (...)` and check `sourceID` client-side
 - Events carry a `fight` field, so one stream over many `fightIDs` can be split per pull
 - `wipeCutoff: N` on `table`/`events`/`graph` ends every fight (kills too) at its Nth death. `night.ts` does the same by moving each fight's `endTime` to that death and fetching the healing tables with `wipeCutoff`, so HPS matches the site
 - Fight `startTime`/`endTime` are milliseconds relative to report start
-- Monk healer is auto-detected by `subType === 'Monk'`; `WCL_CHARACTER_NAME` disambiguates when multiple Monks are in a log
+- Monk healer is auto-detected by `subType === 'Monk'`; the Settings character name disambiguates when multiple Monks are in a log
+- The API and token endpoints send CORS headers for any origin, which is what makes the browser-only build possible
 - `rateLimitData` is injected into every query via string replacement in `withRateLimit()` in `client.ts`
 
 ---

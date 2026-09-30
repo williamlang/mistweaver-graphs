@@ -1,7 +1,7 @@
 import type { Report, Actor } from '../wcl/types.js'
 import type { PullAnalysis } from './analyze.js'
 import { getReport, getMonks, bossPulls, loadPulls } from './night.js'
-import { CHARACTER_NAME } from '../config.js'
+import { getSettings } from '../settings.js'
 
 export interface Source {
   code: string
@@ -17,7 +17,7 @@ export interface MultiLoad {
 }
 
 // Actor ids are local to each report, so across reports the Monk is matched by name:
-// the requested one, else WCL_CHARACTER_NAME, else whoever appears in the most reports.
+// the requested one, else the character name from Settings, else whoever appears in the most reports.
 export async function loadMulti(codes: string[], name: string | null, cutoff: number | null): Promise<MultiLoad> {
   const reports = await Promise.all(codes.map(code => getReport(code)))
 
@@ -32,7 +32,7 @@ export async function loadMulti(codes: string[], name: string | null, cutoff: nu
   }
   const monkNames = [...seen.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)).map(e => e.name)
 
-  const wanted = [name, CHARACTER_NAME].find(n => n && seen.has(n.toLowerCase()))
+  const wanted = [name, getSettings().characterName].find(n => n && seen.has(n.toLowerCase()))
   const monkName = wanted ? seen.get(wanted.toLowerCase())!.name : monkNames[0] ?? null
 
   const sources: Source[] = reports.map((report, i) => ({

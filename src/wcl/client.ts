@@ -1,5 +1,4 @@
-import { loadToken } from '../auth.js'
-import { WCL_API_URL } from '../config.js'
+import { WCL_API_URL, getAccessToken, clearToken } from '../settings.js'
 import { GET_REPORT, GET_EVENTS, GET_DEATHS_TABLE, healingTablesQuery } from './queries.js'
 import type {
   Report,
@@ -24,19 +23,23 @@ function withRateLimit(query: string): string {
   return query.trimEnd().replace(/}(\s*)$/, `  rateLimitData { limitPerHour pointsSpentThisHour pointsResetIn }\n}$1`)
 }
 
-async function gql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-  const token = loadToken()
-  if (!token) throw new Error('NOT_AUTHENTICATED')
+async function gql<T>(query: string, variables: Record<string, unknown>, retried = false): Promise<T> {
+  const token = await getAccessToken()
 
   const res = await fetch(WCL_API_URL, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${token.access_token}`,
+      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ query: withRateLimit(query), variables }),
   })
 
+  // A revoked or expired token: fetch a fresh one once, then give up.
+  if (res.status === 401 && !retried) {
+    clearToken()
+    return gql<T>(query, variables, true)
+  }
   if (!res.ok) throw new Error(`WCL API error: ${res.status} ${await res.text()}`)
 
   const json = (await res.json()) as {
@@ -44,7 +47,12 @@ async function gql<T>(query: string, variables: Record<string, unknown>): Promis
     errors?: Array<{ message: string }>
   }
   if (json.errors?.length) {
-    throw new Error(`GraphQL: ${json.errors.map(e => e.message).join(', ')}`)
+    const message = json.errors.map(e => e.message).join(', ')
+    // The public endpoint can't see private reports.
+    if (/permission|private/i.test(message)) {
+      throw new Error(`${message}. This page uses WarcraftLogs' public API, so the report must be public or unlisted.`)
+    }
+    throw new Error(`GraphQL: ${message}`)
   }
 
   if (json.data?.rateLimitData) {
