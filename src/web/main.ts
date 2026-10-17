@@ -60,6 +60,43 @@ document.addEventListener('click', event => {
   })
 })
 
+// Sortable tables: clicking a header sorts by that column's data-sort values, highest
+// first unless the header says data-first="asc"; clicking it again flips the order.
+// Rows are sorted within each group (the run of rows after a .boss-row), so the
+// pull-by-pull table keeps its bosses together. Cells with an empty data-sort go last.
+document.addEventListener('click', event => {
+  const th = (event.target as HTMLElement).closest<HTMLTableCellElement>('table.sortable th')
+  if (!th) return
+  const table = th.closest('table')!
+  const col = th.cellIndex
+  const current = th.getAttribute('aria-sort')
+  const asc = current ? current === 'descending' : th.dataset.first === 'asc'
+  table.querySelectorAll('th[aria-sort]').forEach(h => h.removeAttribute('aria-sort'))
+  th.setAttribute('aria-sort', asc ? 'ascending' : 'descending')
+
+  const key = (row: HTMLTableRowElement) => {
+    const v = row.cells[col]?.dataset.sort
+    return v === undefined || v === '' ? null : Number(v)
+  }
+  const tbody = table.tBodies[0]
+  const groups: HTMLTableRowElement[][] = [[]]
+  for (const row of [...tbody.rows]) {
+    if (row.classList.contains('boss-row')) groups.push([row])
+    else groups[groups.length - 1].push(row)
+  }
+  for (const group of groups) {
+    const head = group[0]?.classList.contains('boss-row') ? group.shift()! : null
+    group.sort((a, b) => {
+      const x = key(a)
+      const y = key(b)
+      if (x === null || y === null) return x === y ? 0 : x === null ? 1 : -1
+      return asc ? x - y : y - x
+    })
+    if (head) tbody.appendChild(head)
+    group.forEach(row => tbody.appendChild(row))
+  }
+})
+
 async function copyText(text: string): Promise<boolean> {
   try {
     await navigator.clipboard.writeText(text)

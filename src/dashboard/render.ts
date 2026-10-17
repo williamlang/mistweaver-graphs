@@ -5,6 +5,7 @@ import { getReport, getMonks, resolveMonk, bossPulls, loadPulls } from '../mw/ni
 import type { PullAnalysis, CooldownResult } from '../mw/analyze.js'
 import { summarize, groupByBoss, difficultyName, MIN_JUDGED_PULL_MS, type Summary } from '../mw/summary.js'
 import { gradeActiveTime, gradeEfficiency, type Grade } from '../mw/spells.js'
+import { scorePull, gradeScore, type PullScore } from '../mw/score.js'
 import { healingBreakdown } from '../visualizations/healing-breakdown.js'
 import { hpsTimeline } from '../visualizations/hps-timeline.js'
 import { castBreakdown } from '../visualizations/cast-breakdown.js'
@@ -111,10 +112,18 @@ function tile(label: string, value: string, sub = '', headline = false): string 
   </div>`
 }
 
+function scoreText(score: number): string {
+  return graded(`${Math.round(score)}`, gradeScore(score))
+}
+
+function scoreTitle(sc: PullScore): string {
+  return sc.components.map(c => `${c.name} ${c.value}: ${Math.round(c.score)}`).join(' · ')
+}
+
 function cdCell(cd: CooldownResult | undefined): string {
-  if (!cd) return '<td class="num muted">—</td>'
+  if (!cd) return '<td class="num muted" data-sort="">—</td>'
   const text = `${cd.casts.length}/${Math.max(cd.casts.length, Math.round(cd.possible))}`
-  return `<td class="num" title="${esc(cd.name)}: ${cd.casts.length} casts, ~${cd.possible.toFixed(1)} possible (${pct(cd.efficiency)})">${graded(text, gradeEfficiency(cd.efficiency))}</td>`
+  return `<td class="num" data-sort="${cd.efficiency}" title="${esc(cd.name)}: ${cd.casts.length} casts, ~${cd.possible.toFixed(1)} possible (${pct(cd.efficiency)})">${graded(text, gradeEfficiency(cd.efficiency))}</td>`
 }
 
 // Page state lives in the query string so every link carries it: the Monk, and the
@@ -374,6 +383,7 @@ export function renderErrorPage(message: string, backHref = '#/'): string {
 function nightTiles(s: Summary): string {
   return `
     <div class="stats">
+      ${tile('Score', scoreText(s.score), 'out of 100, duration-weighted<br>over every judged pull', true)}
       ${tile('Renewing Mist uptime', graded(pct(s.remUptime, 1), gradeEfficiency(s.remUptime)), `${Math.round(s.remCappedMs / 1000)}s capped · ${s.remCpm.toFixed(1)} casts/min<br>${s.remAvg.toFixed(1)} avg active on the raid`, true)}
       ${tile('Rushing Wind Kick uptime', graded(pct(s.kickUptime, 1), gradeEfficiency(s.kickUptime)), `${Math.round(s.kickIdleMs / 1000)}s ready and unused`, true)}
       ${tile('CPM', s.cpm.toFixed(1), 'casts per minute', true)}
@@ -399,6 +409,7 @@ function pullTable(pulls: PullAnalysis[], s: Summary, href: (p: PullAnalysis) =>
     const status = killed ? 'Killed' : `Best ${best.toFixed(1)}%`
     const head = `<tr class="boss-row">
       <td colspan="3"><a class="boss-link" href="${bossLink(g.pulls[0])}" title="Trends across these pulls"><strong>${esc(g.name)}</strong></a> <span class="muted">${difficultyName(g.difficulty)} · ${g.pulls.length} pull${g.pulls.length === 1 ? '' : 's'} · ${status}</span></td>
+      <td class="num hl">${gs.judged ? scoreText(gs.score) : ''}</td>
       <td class="num hl">${pct(gs.remUptime, 1)}</td>
       <td class="num hl">${gs.remCpm.toFixed(1)}</td>
       <td class="num hl">${pct(gs.kickUptime, 1)}</td>
@@ -411,23 +422,25 @@ function pullTable(pulls: PullAnalysis[], s: Summary, href: (p: PullAnalysis) =>
       n++
       const short = p.durationMs < MIN_JUDGED_PULL_MS
       const c = (k: string) => p.cooldowns.find(cd => cd.key === k)
+      const sc = scorePull(p)
       return `<tr class="pull-row${short ? ' short' : ''}" onclick="window.location='${href(p)}'" title="${short ? 'Too short to judge; left out of averages' : 'Open this pull'}">
-        <td class="num muted"><a href="${href(p)}">${order.get(p.fightId)}</a></td>
-        <td>${resultCell(p)}</td>
-        <td class="num">${formatDuration(p.durationMs)}${cutNote(p)}</td>
-        <td class="num hl" title="${Math.round(p.rem.cappedMs / 1000)}s capped at ${p.rem.charges} charges · ${p.remAvg.toFixed(1)} avg active on the raid">${graded(pct(p.rem.uptimePct, 1), gradeEfficiency(p.rem.uptimePct))}</td>
-        <td class="num hl" title="${p.rem.casts.length} Renewing Mist casts">${p.rem.cpm.toFixed(1)} <span class="delta">${signed(p.rem.cpm - s.remCpm, 1)}</span></td>
-        <td class="num hl" title="${Math.round(p.kick.idleMs / 1000)}s ready and unused">${graded(pct(p.kick.uptimePct, 1), gradeEfficiency(p.kick.uptimePct))}</td>
-        <td class="num hl">${p.cpm.toFixed(1)} <span class="delta">${signed(p.cpm - s.cpm, 1)}</span></td>
-        <td class="num">${graded(pct(p.activeTimePct, 1), gradeActiveTime(p.activeTimePct))}</td>
-        <td class="num">${formatBigNum(p.healing.hps)}</td>
-        <td class="num">${pct(p.healing.overhealPct)}</td>
+        <td class="num muted" data-sort="${order.get(p.fightId)}"><a href="${href(p)}">${order.get(p.fightId)}</a></td>
+        <td data-sort="${p.kill ? -1 : p.bossPct ?? 100}">${resultCell(p)}</td>
+        <td class="num" data-sort="${p.durationMs}">${formatDuration(p.durationMs)}${cutNote(p)}</td>
+        <td class="num hl" data-sort="${sc.score}" title="${esc(scoreTitle(sc))}">${scoreText(sc.score)}</td>
+        <td class="num hl" data-sort="${p.rem.uptimePct}" title="${Math.round(p.rem.cappedMs / 1000)}s capped at ${p.rem.charges} charges · ${p.remAvg.toFixed(1)} avg active on the raid">${graded(pct(p.rem.uptimePct, 1), gradeEfficiency(p.rem.uptimePct))}</td>
+        <td class="num hl" data-sort="${p.rem.cpm}" title="${p.rem.casts.length} Renewing Mist casts">${p.rem.cpm.toFixed(1)} <span class="delta">${signed(p.rem.cpm - s.remCpm, 1)}</span></td>
+        <td class="num hl" data-sort="${p.kick.uptimePct}" title="${Math.round(p.kick.idleMs / 1000)}s ready and unused">${graded(pct(p.kick.uptimePct, 1), gradeEfficiency(p.kick.uptimePct))}</td>
+        <td class="num hl" data-sort="${p.cpm}">${p.cpm.toFixed(1)} <span class="delta">${signed(p.cpm - s.cpm, 1)}</span></td>
+        <td class="num" data-sort="${p.activeTimePct}">${graded(pct(p.activeTimePct, 1), gradeActiveTime(p.activeTimePct))}</td>
+        <td class="num" data-sort="${p.healing.hps}">${formatBigNum(p.healing.hps)}</td>
+        <td class="num" data-sort="${p.healing.overhealPct}">${pct(p.healing.overhealPct)}</td>
         ${cdCell(c('celestial'))}
         ${cdCell(c('conduit'))}
         ${cdCell(c('revival'))}
         ${cdCell(c('cocoon'))}
-        <td class="num">${pct(p.mana.endPct)}</td>
-        <td class="num">${p.deaths.length}${p.monkDied ? ' <span class="you-died" title="You died this pull">†</span>' : ''}</td>
+        <td class="num" data-sort="${p.mana.endPct}">${pct(p.mana.endPct)}</td>
+        <td class="num" data-sort="${p.deaths.length}">${p.deaths.length}${p.monkDied ? ' <span class="you-died" title="You died this pull">†</span>' : ''}</td>
       </tr>`
     }).join('')
     return head + rows
@@ -436,9 +449,10 @@ function pullTable(pulls: PullAnalysis[], s: Summary, href: (p: PullAnalysis) =>
   const celestialName = pulls[0]?.cooldowns.find(c => c.key === 'celestial')?.name.replace('Invoke ', '') ?? 'Celestial'
   return `
     <div class="table-wrap">
-      <table class="pulls">
+      <table class="pulls sortable">
         <thead><tr>
-          <th>#</th><th>Result</th><th class="num">Time</th>
+          <th data-first="asc" aria-sort="ascending">#</th><th data-first="asc">Result</th><th class="num">Time</th>
+          <th class="num hl" title="0-100 from ReM uptime, active time, major cooldowns, kick uptime and, on kills, mana left">Score</th>
           <th class="num hl" title="Share of the pull Renewing Mist was recharging instead of capped (WoWAnalyzer's cast efficiency)">ReM up</th>
           <th class="num hl" title="Renewing Mist casts per minute (Δ vs night)">ReM/min</th>
           <th class="num hl" title="Share of the pull Rushing Wind Kick spent on cooldown">RWK up</th>
@@ -452,8 +466,9 @@ function pullTable(pulls: PullAnalysis[], s: Summary, href: (p: PullAnalysis) =>
     </div>
     <p class="hint">
       ${graded('Good', 'good')} ${graded('Could be better', 'ok')} ${graded('Needs work', 'bad')} —
-      cooldown columns are casts/possible, graded like WoWAnalyzer's cast efficiency (80% / 65%).
-      Pulls under ${MIN_JUDGED_PULL_MS / 1000}s are dimmed and left out of averages. ✂ marks a pull cut at the death cutoff. Click a row to open the pull.
+      scores of 85+ are good, 65+ could be better; hover a score for its parts.
+      Cooldown columns are casts/possible, graded like WoWAnalyzer's cast efficiency (80% / 65%).
+      Pulls under ${MIN_JUDGED_PULL_MS / 1000}s are dimmed and left out of averages. ✂ marks a pull cut at the death cutoff. Click a column to sort the pulls within each boss; click a row to open the pull.
     </p>`
 }
 
@@ -482,6 +497,7 @@ export async function renderNightPage(code: string, playerID: number | null, cut
   const judged = pulls.filter(p => p.durationMs >= MIN_JUDGED_PULL_MS)
 
   const trends: Array<[TrendMetric, number]> = [
+    [{ id: 't-score', title: 'Score', value: p => scorePull(p).score, format: '.0f', domain: [0, 100] }, s.score],
     [{ id: 't-rem', title: 'Renewing Mist uptime', value: p => p.rem.uptimePct, format: '.0%', domain: [0, 1] }, s.remUptime],
     [{ id: 't-remcpm', title: 'Renewing Mist casts per minute', value: p => p.rem.cpm, format: '.1f' }, s.remCpm],
     [{ id: 't-kick', title: 'Rushing Wind Kick uptime', value: p => p.kick.uptimePct, format: '.0%', domain: [0, 1] }, s.kickUptime],
@@ -532,6 +548,7 @@ export async function renderNightPage(code: string, playerID: number | null, cut
 function d3ish(v: number, format: string): string {
   if (format.endsWith('%')) return pct(v)
   if (format === '~s') return formatBigNum(v)
+  if (format === '.0f') return v.toFixed(0)
   return v.toFixed(1)
 }
 
@@ -578,8 +595,12 @@ export async function renderPullPage(code: string, fightId: number, playerID: nu
   </div>`
 
   const kickCd = (p.kick.cooldownMs / 1000).toFixed(1)
+  const sc = scorePull(p)
+  const worst = [...sc.components].sort((a, b) => b.lost - a.lost)[0]
   const tiles = `
     <div class="stats">
+      ${tile('Score', scoreText(sc.score),
+        `${worst && worst.lost >= 1 ? `most lost to ${esc(worst.name.toLowerCase())} (−${Math.round(worst.lost)})` : 'nothing significant lost'}<br>${comparison(sc.score, siblings.map(o => scorePull(o).score), 0, false)}`, true)}
       ${tile('Renewing Mist uptime', graded(pct(p.rem.uptimePct, 1), gradeEfficiency(p.rem.uptimePct)),
         `${Math.round(p.rem.cappedMs / 1000)}s capped at ${p.rem.charges} charges · ${p.rem.casts.length} casts (${p.rem.cpm.toFixed(1)}/min)<br>${comparison(p.rem.uptimePct, siblings.map(o => o.rem.uptimePct), 1, true)}`, true)}
       ${tile(`${esc(p.kick.name)} uptime`, graded(pct(p.kick.uptimePct, 1), gradeEfficiency(p.kick.uptimePct)),
@@ -603,8 +624,21 @@ export async function renderPullPage(code: string, fightId: number, playerID: nu
       <td class="num">${graded(pct(cd.efficiency), gradeEfficiency(cd.efficiency))}</td>
       <td class="num">${Math.round(cd.cappedMs / 1000)}s</td>
     </tr>`).join('')
+  const scoreRows = sc.components.map(c => `<tr>
+      <td>${esc(c.name)}</td>
+      <td class="num">${esc(c.value)}</td>
+      <td class="num">${scoreText(c.score)}</td>
+      <td class="num">${Math.round(c.weight * 100)}%</td>
+      <td class="num">${c.lost >= 0.5 ? `−${Math.round(c.lost)}` : '—'}</td>
+    </tr>`).join('')
   const rotRows = p.rotational.map(r => `<tr><td>${esc(r.name)}</td><td class="num">${r.casts.length}</td><td class="num">${r.cpm.toFixed(1)}</td></tr>`).join('')
   const castTables = `
+    <div class="card">
+      <div class="card-title">Score breakdown <span class="muted">— ${Math.round(sc.score)} / 100</span></div>
+      <table class="mini"><thead><tr><th>Part</th><th class="num">Value</th><th class="num">Score</th><th class="num">Weight</th><th class="num">Lost</th></tr></thead>
+      <tbody>${scoreRows}</tbody></table>
+      <p class="hint">Each part scores 85 at its "good" line and 65 at "could be better". Mana left only counts on a kill.</p>
+    </div>
     <div class="card">
       <div class="card-title">Major cooldowns</div>
       <table class="mini"><thead><tr><th>Spell</th><th class="num">Casts</th><th class="num">Possible</th><th class="num">Efficiency</th><th class="num">Unused</th></tr></thead>
@@ -698,6 +732,7 @@ export async function renderBossPage(code: string, encounterID: number, difficul
 
 function bossTiles(s: Summary): string {
   return `<div class="stats">
+    ${tile('Score', scoreText(s.score), 'out of 100, duration-weighted', true)}
     ${tile('Renewing Mist uptime', graded(pct(s.remUptime, 1), gradeEfficiency(s.remUptime)), `${s.remCpm.toFixed(1)} casts/min`, true)}
     ${tile('Rushing Wind Kick uptime', graded(pct(s.kickUptime, 1), gradeEfficiency(s.kickUptime)), `${Math.round(s.kickIdleMs / 1000)}s ready and unused`, true)}
     ${tile('CPM', s.cpm.toFixed(1), `${s.judged} pull${s.judged === 1 ? '' : 's'} judged`, true)}
@@ -801,6 +836,7 @@ function byNightTable(pulls: PullAnalysis[], cutoff: number | null, bossLinkFor:
     const best = Math.min(...ps.map(p => (p.kill ? 0 : p.bossPct ?? 100)))
     return `<tr class="${cls}"><td>${label}</td>
       <td class="num">${ps.length}</td><td class="num">${killed ? `${s.kills} kill${s.kills === 1 ? '' : 's'}` : `best ${best.toFixed(1)}%`}</td>
+      <td class="num">${s.judged ? scoreText(s.score) : '—'}</td>
       <td class="num">${graded(pct(s.remUptime, 1), gradeEfficiency(s.remUptime))}</td><td class="num">${s.remCpm.toFixed(1)}</td>
       <td class="num">${graded(pct(s.kickUptime, 1), gradeEfficiency(s.kickUptime))}</td><td class="num">${s.cpm.toFixed(1)}</td>
       <td class="num">${graded(pct(s.activeTime, 1), gradeActiveTime(s.activeTime))}</td><td class="num">${formatBigNum(s.hps)}</td></tr>`
@@ -810,7 +846,7 @@ function byNightTable(pulls: PullAnalysis[], cutoff: number | null, bossLinkFor:
     return row(`<a href="${bossLinkFor(ps[0])}">${nightLabel(ps[0].reportStartTime)}</a>`, ps)
   }).join('')
   return `<table class="mini context">
-    <thead><tr><th>Night</th><th class="num">Pulls</th><th class="num">Result</th><th class="num">ReM up</th><th class="num">ReM/min</th>
+    <thead><tr><th>Night</th><th class="num">Pulls</th><th class="num">Result</th><th class="num">Score</th><th class="num">ReM up</th><th class="num">ReM/min</th>
       <th class="num">RWK up</th><th class="num">CPM</th><th class="num">Active</th><th class="num">HPS</th></tr></thead>
     <tbody>${rows}${nights.length > 1 ? row('All nights', pulls, 'base-row') : ''}</tbody></table>`
 }
@@ -821,6 +857,7 @@ function bossTrends(pulls: PullAnalysis[], cutoff: number | null): string {
   if (judged.length < 2) return ''
   const s = summarize(pulls)
   const metrics: Array<[TrendMetric, number]> = [
+    [{ id: 'score', title: 'Score', value: p => scorePull(p).score, format: '.0f', domain: [0, 100] }, s.score],
     [{ id: 'rem', title: 'Renewing Mist uptime', value: p => p.rem.uptimePct, format: '.0%', domain: [0, 1] }, s.remUptime],
     [{ id: 'kick', title: 'Rushing Wind Kick uptime', value: p => p.kick.uptimePct, format: '.0%', domain: [0, 1] }, s.kickUptime],
     [{ id: 'cpm', title: 'CPM', value: p => p.cpm, format: '.1f' }, s.cpm],

@@ -209,6 +209,10 @@
       letter-spacing: 0.05em; padding: 0.5rem 0.625rem; background: #181825; position: sticky; top: 0;
       border-bottom: 1px solid #313244; white-space: nowrap;
     }
+    table.sortable th { cursor: pointer; user-select: none; }
+    table.sortable th:hover { color: #cdd6f4; }
+    table.sortable th[aria-sort]::after { content: '▼'; font-size: 0.75em; margin-left: 0.3em; }
+    table.sortable th[aria-sort="ascending"]::after { content: '▲'; }
     table.pulls td { padding: 0.375rem 0.625rem; border-bottom: 1px solid #262637; white-space: nowrap; }
     table.pulls .num, table.mini .num { text-align: right; }
     table.pulls th.hl, table.pulls td.hl { background: #1f2233; }

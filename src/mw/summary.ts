@@ -1,4 +1,5 @@
 import type { PullAnalysis } from './analyze.js'
+import { scorePull } from './score.js'
 
 // Pulls shorter than this (instant resets, pre-pull deaths) are listed but kept out of
 // averages, where their tiny denominators would swing every rate.
@@ -21,6 +22,7 @@ export interface Summary {
   hps: number
   overhealPct: number
   monkDeaths: number
+  score: number
 }
 
 // Duration-weighted, so a 6 minute kill counts for more than a 40 second wipe.
@@ -51,6 +53,7 @@ export function summarize(all: PullAnalysis[]): Summary {
     hps: timeMs > 0 ? effective / (timeMs / 1000) : 0,
     overhealPct: effective + overheal > 0 ? overheal / (effective + overheal) : 0,
     monkDeaths: all.filter(p => p.monkDied).length,
+    score: w(p => scorePull(p).score),
   }
 }
 
